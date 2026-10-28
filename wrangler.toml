@@ -32,7 +32,8 @@ binding = "ASSETS"
 [triggers]
 crons = ["7,27,47 * * * *"]
 
-# 允许跨域调用 API 的前端来源（逗号分隔）。GitHub Pages 部署的前端
-# 从这里读取，凭证模式要求明确的来源而非 "*"。留空则只允许同源（CF 部署）。
+# 允许跨域调用 API 的前端来源（逗号分隔）。GitHub Pages / Docker(Sealos) 等
+# 跨域部署的前端从这里读取，凭证模式要求明确的来源而非 "*"。留空则只允许
+# 同源（CF 部署）。Sealos 免费域名随应用重建可能变化，变了要同步这里并重新部署。
 [vars]
-CORS_ORIGINS = "https://java131313.github.io"
+CORS_ORIGINS = "https://java131313.github.io, https://kozgijfxmimm.sealosbja.site"
