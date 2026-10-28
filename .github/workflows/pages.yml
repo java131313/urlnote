@@ -94,7 +94,9 @@ jobs:
         working-directory: rust/frontend/dist
         run: |
           cp index.html 404.html
-          sed -i "s#\"\(/\(vditor\|mammoth\|turndown\|pdfjs\)/#\"$BASE_PATH/\1/#g" index.html 404.html
+          for d in vditor mammoth turndown pdfjs; do
+            sed -i -e "s#href=\"/$d/#href=\"$BASE_PATH/$d/#g" -e "s#src=\"/$d/#src=\"$BASE_PATH/$d/#g" index.html 404.html
+          done
 
       - uses: actions/upload-pages-artifact@v3
         with:
