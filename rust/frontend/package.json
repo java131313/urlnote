@@ -2,8 +2,11 @@
   "name": "urlnote-frontend-assets",
   "private": true,
   "version": "0.1.0",
-  "description": "Only used to fetch vditor's dist files (editor runtime assets served from /vditor)",
+  "description": "Fetch browser libraries served from static/: vditor editor runtime, mammoth/turndown (docx->markdown), pdfjs (pdf text)",
   "dependencies": {
+    "mammoth": "^1.9.0",
+    "pdfjs-dist": "3.11.174",
+    "turndown": "^7.2.0",
     "vditor": "^4.0.1"
   }
 }

@@ -20,6 +20,14 @@ rust-static:
 	rm -rf rust/frontend/static/vditor
 	mkdir -p rust/frontend/static/vditor
 	cp -R rust/frontend/node_modules/vditor/dist rust/frontend/static/vditor/dist
+	# import 转换库：mammoth(docx→html) / turndown(html→md) / pdfjs(pdf 文本)
+	rm -rf rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
+	mkdir -p rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
+	cp rust/frontend/node_modules/mammoth/mammoth.browser.min.js rust/frontend/static/mammoth/
+	cp rust/frontend/node_modules/turndown/dist/turndown.js rust/frontend/static/turndown/
+	cp rust/frontend/node_modules/pdfjs-dist/legacy/build/pdf.min.js \
+	   rust/frontend/node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js \
+	   rust/frontend/static/pdfjs/
 
 rust-frontend:
 	cd rust/frontend && trunk build --release
@@ -27,6 +35,11 @@ rust-frontend:
 	# assets into the dist output so /vditor/* URLs resolve.
 	rm -rf rust/frontend/dist/vditor
 	cp -R rust/frontend/static/vditor rust/frontend/dist/vditor
+	# the same for the import conversion libraries (/mammoth /turndown /pdfjs)
+	rm -rf rust/frontend/dist/mammoth rust/frontend/dist/turndown rust/frontend/dist/pdfjs
+	cp -R rust/frontend/static/mammoth rust/frontend/dist/mammoth
+	cp -R rust/frontend/static/turndown rust/frontend/dist/turndown
+	cp -R rust/frontend/static/pdfjs rust/frontend/dist/pdfjs
 	# The compressed IPADIC dictionary for the search tokenizer is fetched by
 	# the worker through the ASSETS binding at runtime (embedding it would
 	# blow the Workers script size limit).
@@ -71,4 +84,4 @@ init-db-local:
 	npx wrangler d1 execute urlnote --local --file=./schema.sql
 
 clean:
-	rm -rf build rust/target rust/worker/build rust/frontend/dist rust/frontend/node_modules rust/frontend/static/vditor frontend/node_modules frontend/dist
+	rm -rf build rust/target rust/worker/build rust/frontend/dist rust/frontend/node_modules rust/frontend/static/vditor rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs frontend/node_modules frontend/dist

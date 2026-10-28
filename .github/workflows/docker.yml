@@ -53,13 +53,18 @@ jobs:
             exit 1
           fi
 
-      # 取 vditor 编辑器运行时资源（与 Makefile 的 rust-static 目标一致）
-      - name: Stage vditor runtime assets
+      # 取 vditor 运行时与 import 转换库（与 Makefile 的 rust-static 目标一致）
+      - name: Stage runtime assets
         run: |
           npm --prefix rust/frontend ci --no-audit --no-fund
-          rm -rf rust/frontend/static/vditor
-          mkdir -p rust/frontend/static/vditor
+          rm -rf rust/frontend/static/vditor rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
+          mkdir -p rust/frontend/static/vditor rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
           cp -R rust/frontend/node_modules/vditor/dist rust/frontend/static/vditor/dist
+          cp rust/frontend/node_modules/mammoth/mammoth.browser.min.js rust/frontend/static/mammoth/
+          cp rust/frontend/node_modules/turndown/dist/turndown.js rust/frontend/static/turndown/
+          cp rust/frontend/node_modules/pdfjs-dist/legacy/build/pdf.min.js \
+             rust/frontend/node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js \
+             rust/frontend/static/pdfjs/
 
       # 根路径部署：不加 --public-url；API_BASE 编译进 WASM
       - name: Build frontend (WASM)
@@ -69,8 +74,11 @@ jobs:
       # Trunk 0.22 不再自动拷贝 static/（与 Makefile 的 rust-frontend 目标一致）
       - name: Stage static assets into dist
         run: |
-          rm -rf rust/frontend/dist/vditor
+          rm -rf rust/frontend/dist/vditor rust/frontend/dist/mammoth rust/frontend/dist/turndown rust/frontend/dist/pdfjs
           cp -R rust/frontend/static/vditor rust/frontend/dist/vditor
+          cp -R rust/frontend/static/mammoth rust/frontend/dist/mammoth
+          cp -R rust/frontend/static/turndown rust/frontend/dist/turndown
+          cp -R rust/frontend/static/pdfjs rust/frontend/dist/pdfjs
           mkdir -p rust/frontend/dist/dict
           cp -R rust/frontend/static/dict/. rust/frontend/dist/dict/
 

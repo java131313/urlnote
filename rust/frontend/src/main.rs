@@ -2106,6 +2106,192 @@ fn sanitize_filename(t: &str) -> String {    t.chars()
         .to_string()
 }
 
+// ---- import conversion helpers ----
+//
+// Word/PDF → markdown conversion runs entirely in the browser: mammoth
+// (docx→HTML), Turndown (HTML→markdown), pdf.js (PDF text). The libraries
+// are served from /mammoth /turndown /pdfjs (staged like /vditor).
+
+fn js_fn(obj: &JsValue, name: &str) -> Result<js_sys::Function, String> {
+    js_sys::Reflect::get(obj, &JsValue::from_str(name))
+        .map_err(|_| format!("JS 函数缺失: {name}"))?
+        .dyn_into::<js_sys::Function>()
+        .map_err(|_| format!("JS 函数缺失: {name}"))
+}
+
+/// Call an object's method that returns a JS Promise and await it.
+async fn js_call_promise(this: &JsValue, name: &str, arg: Option<&JsValue>) -> Result<JsValue, String> {
+    let f = js_fn(this, name)?;
+    let p = match arg {
+        Some(a) => f.call1(this, a),
+        None => f.call0(this),
+    }
+    .map_err(|_| format!("{name} 调用失败"))?;
+    JsFuture::from(
+        p.dyn_into::<js_sys::Promise>()
+            .map_err(|_| format!("{name} 未返回 Promise"))?,
+    )
+    .await
+    .map_err(|_| format!("{name} 失败"))
+}
+
+/// .docx → markdown: mammoth converts to HTML, Turndown to markdown.
+/// Embedded images come back as data URIs — upload them through the normal
+/// /api/upload flow so the note keeps /i/ links like pasted images.
+async fn docx_to_markdown(file: &web_sys::File) -> Result<String, String> {
+    let buf = JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|_| "读取文件失败".to_string())?;
+    let global = js_sys::global();
+    let mammoth = js_sys::Reflect::get(&global, &"mammoth".into())
+        .map_err(|_| "docx 转换库未加载".to_string())?;
+    let opts = js_sys::Object::new();
+    js_sys::Reflect::set(&opts, &"arrayBuffer".into(), &buf).unwrap();
+    let res = js_call_promise(&mammoth, "convertToHtml", Some(&opts)).await?;
+    let html = js_sys::Reflect::get(&res, &"value".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+
+    let td = js_fn(&global, "TurndownService").map_err(|_| "Markdown 转换库未加载".to_string())?;
+    let opts = js_sys::Object::new();
+    for (k, v) in [
+        ("headingStyle", "atx"),
+        ("hr", "---"),
+        ("bulletListMarker", "-"),
+        ("codeBlockStyle", "fenced"),
+        ("emDelimiter", "*"),
+    ] {
+        js_sys::Reflect::set(&opts, &k.into(), &JsValue::from_str(v)).unwrap();
+    }
+    let args = js_sys::Array::of1(&opts.into());
+    let svc = js_sys::Reflect::construct(&td, &args)
+        .map_err(|_| "TurndownService 初始化失败".to_string())?;
+    let svc = JsValue::from(svc);
+    let md = js_fn(&svc, "turndown")?
+        .call1(&svc, &JsValue::from_str(&html))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+
+    Ok(upload_data_uri_images(md).await)
+}
+
+/// Upload every `![](data:image/...)` in converted markdown via /api/upload
+/// and replace it with an /i/ link (absolute for display; storage_md keeps
+/// the relative form in the database). Data URIs whose upload fails are kept.
+async fn upload_data_uri_images(md: String) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md.as_str();
+    while let Some(start) = rest.find("](data:image/") {
+        let uri_start = start + 2;
+        let Some(uri_end_rel) = rest[uri_start..].find(')') else { break };
+        let uri_end = uri_start + uri_end_rel;
+        let uri = &rest[uri_start..uri_end];
+        out.push_str(&rest[..uri_start]);
+        match upload_data_uri(uri).await {
+            Some(url) => out.push_str(&url),
+            None => out.push_str(uri),
+        }
+        rest = &rest[uri_end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+async fn upload_data_uri(uri: &str) -> Option<String> {
+    use base64::Engine;
+    let (meta, b64) = uri.split_once(',')?;
+    let mime = meta.strip_prefix("data:")?.split(';').next()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.as_bytes())
+        .ok()?;
+    let u8arr = js_sys::Uint8Array::from(&bytes[..]);
+    let parts = js_sys::Array::of1(&u8arr.into());
+    let opts = web_sys::BlobPropertyBag::new();
+    opts.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts.into(), &opts).ok()?;
+    let form = web_sys::FormData::new().ok()?;
+    form.append_with_blob("file[]", &blob).ok()?;
+    let req = gloo_net::http::Request::post(&api_url("/api/upload"))
+        .credentials(RequestCredentials::Include)
+        .body(form)
+        .ok()?;
+    let resp = req.send().await.ok()?;
+    if !resp.ok() {
+        return None;
+    }
+    let ur = resp.json::<UploadResponse>().await.ok()?;
+    ur.data.succ_map.values().next().map(|p| api_url(p))
+}
+
+/// .pdf → text with pdf.js. PDFs carry no reliable markdown structure
+/// (headings/tables are visual only), so the result is plain text with
+/// source line breaks; complex layouts (multi-column, tables) may interleave.
+async fn pdf_to_text(file: &web_sys::File) -> Result<String, String> {
+    let buf = JsFuture::from(file.array_buffer())
+        .await
+        .map_err(|_| "读取文件失败".to_string())?;
+    let global = js_sys::global();
+    let pdfjs = js_sys::Reflect::get(&global, &"pdfjsLib".into())
+        .map_err(|_| "PDF 转换库未加载".to_string())?;
+    if let Ok(gw) = js_sys::Reflect::get(&pdfjs, &"GlobalWorkerOptions".into()) {
+        let _ = js_sys::Reflect::set(
+            &gw,
+            &"workerSrc".into(),
+            &JsValue::from_str(&format!("{BASE_PATH}/pdfjs/pdf.worker.min.js")),
+        );
+    }
+    let opts = js_sys::Object::new();
+    let data = js_sys::Uint8Array::new(&buf);
+    js_sys::Reflect::set(&opts, &"data".into(), &data).unwrap();
+    let task = js_fn(&pdfjs, "getDocument")?
+        .call1(&pdfjs, &opts)
+        .map_err(|_| "PDF 打开失败".to_string())?;
+    let doc = JsFuture::from(
+        task.dyn_into::<js_sys::Promise>()
+            .map_err(|_| "PDF 打开失败".to_string())?,
+    )
+    .await
+    .map_err(|_| "PDF 打开失败（可能已加密或损坏）".to_string())?;
+    let num_pages = js_sys::Reflect::get(&doc, &"numPages".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as i32;
+
+    let mut out = String::new();
+    for p in 1..=num_pages {
+        let page = js_call_promise(&doc, "getPage", Some(&JsValue::from(p))).await?;
+        let tc = js_call_promise(&page, "getTextContent", None).await?;
+        let items = js_sys::Reflect::get(&tc, &"items".into())
+            .unwrap_or_else(|_| js_sys::Array::new().into())
+            .dyn_into::<js_sys::Array>()
+            .unwrap_or_default();
+        let mut line = String::new();
+        for item in items.iter() {
+            let s = js_sys::Reflect::get(&item, &"str".into())
+                .ok()
+                .and_then(|v| v.as_string())
+                .unwrap_or_default();
+            // CJK glyphs come as per-character items without spaces; western
+            // words usually carry their own trailing space — concatenate.
+            line.push_str(&s);
+            let has_eol = js_sys::Reflect::get(&item, &"hasEOL".into())
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if has_eol {
+                out.push_str(line.trim_end());
+                out.push('\n');
+                line.clear();
+            }
+        }
+        out.push_str(line.trim_end());
+        out.push_str("\n\n");
+    }
+    Ok(out.trim_end().to_string())
+}
+
 /// Replace (append=false) or append (append=true) the editor content with the
 /// text of the selected files, then save. Drives the two hidden file inputs.
 fn read_files_into_editor(ctx: Ctx, append: bool, input: HtmlInputElement) {
@@ -2156,13 +2342,40 @@ fn read_files_into_editor(ctx: Ctx, append: bool, input: HtmlInputElement) {
             String::new()
         };
         let mut names = Vec::new();
+        let mut converted = 0usize;
         for file in picked {
-            names.push(file.name());
-            let text = match JsFuture::from(file.text()).await {
-                Ok(t) => t.as_string().unwrap_or_default(),
-                Err(_) => {
-                    c.set_status(&format!("{} 读取失败", file.name()), "error");
-                    return;
+            let name = file.name();
+            names.push(name.clone());
+            let lower = name.to_lowercase();
+            let text = if lower.ends_with(".docx") {
+                match docx_to_markdown(&file).await {
+                    Ok(t) => {
+                        converted += 1;
+                        t
+                    }
+                    Err(e) => {
+                        c.set_status(&format!("{name}：{e}"), "error");
+                        continue;
+                    }
+                }
+            } else if lower.ends_with(".pdf") {
+                match pdf_to_text(&file).await {
+                    Ok(t) => {
+                        converted += 1;
+                        t
+                    }
+                    Err(e) => {
+                        c.set_status(&format!("{name}：{e}"), "error");
+                        continue;
+                    }
+                }
+            } else {
+                match JsFuture::from(file.text()).await {
+                    Ok(t) => t.as_string().unwrap_or_default(),
+                    Err(_) => {
+                        c.set_status(&format!("{name} 读取失败"), "error");
+                        continue;
+                    }
                 }
             };
             if append {
@@ -2180,7 +2393,14 @@ fn read_files_into_editor(ctx: Ctx, append: bool, input: HtmlInputElement) {
             }
         });
         c.mark_dirty();
-        c.set_status(&format!("已载入 {} 个文件，正在保存…", names.len()), "saving");
+        c.set_status(
+            &if converted > 0 {
+                format!("已载入 {} 个文件（转换 {} 个），正在保存…", names.len(), converted)
+            } else {
+                format!("已载入 {} 个文件，正在保存…", names.len())
+            },
+            "saving",
+        );
         c.save();
     });
 }
@@ -3038,7 +3258,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                     <button
                         type="button"
                         class="tool"
-                        title="上传 Markdown 文件，替换当前全文"
+                        title="导入文件（Markdown / Word / PDF），替换当前全文"
                         on:click=move |_| {
                             let r = upload_ref;
                             if let Some(i) = r.get() {
@@ -3051,7 +3271,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                     <button
                         type="button"
                         class="tool"
-                        title="选择一个或多个 Markdown 文件，依次追加到文末"
+                        title="选择一个或多个文件（Markdown / Word / PDF），依次追加到文末"
                         on:click=move |_| {
                             let r = append_ref;
                             if let Some(i) = r.get() {
@@ -3065,7 +3285,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                 <input
                     type="file"
                     class="file-hidden"
-                    accept=".md,.markdown,.txt,text/markdown,text/plain"
+                    accept=".md,.markdown,.txt,.docx,.pdf,text/markdown,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
                     node_ref=upload_ref
                     on:change=move |_| {
                         let r = upload_ref;
@@ -3077,7 +3297,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                 <input
                     type="file"
                     class="file-hidden"
-                    accept=".md,.markdown,.txt,text/markdown,text/plain"
+                    accept=".md,.markdown,.txt,.docx,.pdf,text/markdown,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/pdf"
                     multiple=true
                     node_ref=append_ref
                     on:change=move |_| {

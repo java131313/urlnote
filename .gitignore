@@ -13,6 +13,9 @@ frontend/dist
 frontend/public/vditor
 rust/frontend/dist
 rust/frontend/static/vditor
+rust/frontend/static/mammoth
+rust/frontend/static/turndown
+rust/frontend/static/pdfjs
 
 # Local note data (old file backend) — never publish
 data
