@@ -1,0 +1,38 @@
+name = "urlnote"
+main = "./rust/worker/build/worker/shim.mjs"
+compatibility_date = "2026-10-01"
+
+# `make build` compiles the Rust worker and frontend to WebAssembly
+# (see Makefile; the Go backend from main.go is kept as build-go).
+[build]
+command = "make build"
+
+# D1 binding — run `npx wrangler d1 create urlnote` and paste the database_id
+# below (see Makefile target `create-db`).
+[[d1_databases]]
+binding = "DB"
+database_name = "urlnote"
+database_id = "3b698e10-d24c-496f-ab58-160d09634a36"
+
+# Workers KV — 只存上传的图片二进制（随机 key，内容不可变）。
+# 页面内容不再进 KV：由 worker 进程内的 LRU 内存缓存（D1 兜底）承担，
+# 避免免费版 KV 每天 1000 次写入的配额限制。
+[[kv_namespaces]]
+binding = "CACHE"
+id = "81c1ef18542c4dcdac981b4cdec1fcb4"
+
+# Rust/Leptos frontend, built by Trunk to rust/frontend/dist. Requests matching
+# a file are served by Cloudflare's asset layer; everything else falls through
+# to the Rust Worker (API routes and SPA routes like /u0yYk).
+[assets]
+directory = "./rust/frontend/dist"
+binding = "ASSETS"
+
+# 后台一致性检查:每 20 分钟校验 notes 与 notes_mark(孤儿清理/过期重生成)
+[triggers]
+crons = ["7,27,47 * * * *"]
+
+# 允许跨域调用 API 的前端来源（逗号分隔）。GitHub Pages 部署的前端
+# 从这里读取，凭证模式要求明确的来源而非 "*"。留空则只允许同源（CF 部署）。
+[vars]
+CORS_ORIGINS = "https://java131313.github.io"

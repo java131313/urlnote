@@ -1,0 +1,9 @@
+{
+  "name": "urlnote-frontend-assets",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Only used to fetch vditor's dist files (editor runtime assets served from /vditor)",
+  "dependencies": {
+    "vditor": "^4.0.1"
+  }
+}

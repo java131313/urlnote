@@ -1,0 +1,26 @@
+# Rust
+target/
+rust/worker/build
+
+# Node
+node_modules
+rust/frontend/node_modules
+
+# Build outputs
+build
+myapp
+frontend/dist
+frontend/public/vditor
+rust/frontend/dist
+rust/frontend/static/vditor
+
+# Local note data (old file backend) — never publish
+data
+
+# Scratch files
+1.txt
+
+# Misc
+.DS_Store
+.wrangler/
+.idea/
