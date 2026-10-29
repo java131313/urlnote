@@ -1223,3 +1223,67 @@ header a:hover {
     background: #262c35;
   }
 }
+
+/* oss create/delete */
+.oss-tools {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #eceef0;
+}
+
+.oss-file {
+  padding: 0;
+  gap: 0;
+  align-items: center;
+}
+
+.oss-open {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  color: inherit;
+  padding: 6px 0 6px 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.oss-open > :not(.oss-meta) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.oss-del {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  opacity: 0.25;
+  flex-shrink: 0;
+}
+
+.oss-row:hover .oss-del {
+  opacity: 1;
+}
+
+.oss-del:hover {
+  background: #fdecea;
+}
+
+@media (prefers-color-scheme: dark) {
+  .oss-tools {
+    border-color: #333;
+  }
+  .oss-del:hover {
+    background: #462e2c;
+  }
+}

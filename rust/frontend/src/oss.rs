@@ -286,6 +286,28 @@ pub async fn get_object(key: &str) -> Result<String, String> {
     }
 }
 
+pub async fn delete_object(key: &str) -> Result<(), String> {
+    let path = format!("/{OSS_BUCKET}/{}", aws_uri_encode(key, false));
+    let sig = sign_request("DELETE", &path, &[], b"", now_ms());
+    let url = format!("https://{OSS_ENDPOINT}{path}");
+    let resp = apply_sig(gloo_net::http::Request::delete(&url), &sig)
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    match resp.status() {
+        204 | 200 => Ok(()),
+        404 => Err("文件不存在".to_string()),
+        s => Err(format!("删除失败 (HTTP {s})")),
+    }
+}
+
+/// True if an object already exists under `key` (for overwrite confirmation).
+/// gloo-net has no HEAD constructor; a GET whose body we drop is equivalent
+/// for a name-collision check (the checked key is almost always absent).
+pub async fn object_exists(key: &str) -> bool {
+    get_object(key).await.is_ok()
+}
+
 pub async fn put_object(key: &str, content: &str) -> Result<(), String> {
     let path = format!("/{OSS_BUCKET}/{}", aws_uri_encode(key, false));
     let payload = content.as_bytes().to_vec();
@@ -585,6 +607,128 @@ pub fn OssView() -> impl IntoView {
         });
     };
 
+    // ---- create / delete ----
+
+    let refresh_list = move || {
+        let p = prefix.get();
+        loading.set(true);
+        spawn_local(async move {
+            match list_objects(&p).await {
+                Ok((d, f)) => {
+                    dirs.set(d);
+                    files.set(f);
+                    loading.set(false);
+                }
+                Err(e) => {
+                    status.set(e);
+                    loading.set(false);
+                }
+            }
+        });
+    };
+
+    let sanitize_name = |raw: &str| -> Option<String> {
+        let name: String = raw
+            .chars()
+            .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'))
+            .take(120)
+            .collect::<String>()
+            .trim()
+            .to_string();
+        (!name.is_empty() && name != "." && name != "..").then_some(name)
+    };
+
+    let create_file = move |_| {
+        let Some(name) = window()
+            .prompt_with_message("在当前目录新建文件（可不带 .md 后缀）：")
+            .ok()
+            .flatten()
+            .and_then(|raw| sanitize_name(&raw))
+        else {
+            return;
+        };
+        let name = if name.contains('.') {
+            name
+        } else {
+            format!("{name}.md")
+        };
+        let key = format!("{}{}", prefix.get(), name);
+        let content = format!("# {name}\n");
+        let open = open_file;
+        status.set(format!("创建 {name}…"));
+        spawn_local(async move {
+            if object_exists(&key).await
+                && !window()
+                    .confirm_with_message(&format!("{name} 已存在，覆盖它？"))
+                    .unwrap_or(false)
+            {
+                status.set("已取消".to_string());
+                return;
+            }
+            match put_object(&key, &content).await {
+                Ok(()) => {
+                    status.set(format!("已创建 {name}"));
+                    refresh_list();
+                    open(key, name);
+                }
+                Err(e) => status.set(e),
+            }
+        });
+    };
+
+    let create_folder = move |_| {
+        let Some(name) = window()
+            .prompt_with_message("在当前目录新建文件夹：")
+            .ok()
+            .flatten()
+            .and_then(|raw| sanitize_name(&raw))
+        else {
+            return;
+        };
+        // S3 has no real directories — a zero-byte "name/" marker object
+        // makes the prefix show up in delimiter listings.
+        let key = format!("{}{}/", prefix.get(), name);
+        status.set(format!("创建 {name}/…"));
+        spawn_local(async move {
+            match put_object(&key, "").await {
+                Ok(()) => {
+                    status.set(format!("已创建 {name}/"));
+                    refresh_list();
+                }
+                Err(e) => status.set(e),
+            }
+        });
+    };
+
+    let delete_file = move |key: String, name: String| {
+        if !window()
+            .confirm_with_message(&format!("删除 {name}？此操作不可恢复。"))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let is_open = current.get().as_deref() == Some(key.as_str());
+        status.set(format!("删除 {name}…"));
+        spawn_local(async move {
+            match delete_object(&key).await {
+                Ok(()) => {
+                    if is_open {
+                        current.set(None);
+                        current_name.set(String::new());
+                        dirty.set(false);
+                        set_editor_value("");
+                        if let Some(doc) = window().document() {
+                            doc.set_title("文件库");
+                        }
+                    }
+                    status.set(format!("已删除 {name}"));
+                    refresh_list();
+                }
+                Err(e) => status.set(e),
+            }
+        });
+    };
+
     let crumbs = Memo::new(move |_| {
         let p = prefix.get();
         let mut items = vec![("根目录".to_string(), String::new())];
@@ -636,6 +780,14 @@ pub fn OssView() -> impl IntoView {
                             }
                         />
                     </nav>
+                    <div class="oss-tools">
+                        <button type="button" class="tool" on:click=create_file title="在当前目录新建 Markdown 文件">
+                            "＋ 文件"
+                        </button>
+                        <button type="button" class="tool" on:click=create_folder title="在当前目录新建文件夹">
+                            "＋ 文件夹"
+                        </button>
+                    </div>
                     <div class="oss-list">
                         {move || {
                             if loading.get() {
@@ -674,18 +826,33 @@ pub fn OssView() -> impl IntoView {
                             children=move |f| {
                                 let name = f.name.clone();
                                 let label = name.clone();
-                                let key = f.key.clone();
                                 let meta = format!("{} · {}", format_size(f.size), f.modified);
                                 let open = open_file;
+                                let del = delete_file;
+                                let key_open = f.key.clone();
+                                let name_open = name.clone();
+                                let key_del = f.key.clone();
+                                let label_del = label.clone();
+                                let del_title = format!("删除 {label}");
                                 view! {
-                                    <button
-                                        type="button"
-                                        class="oss-row oss-file"
-                                        on:click=move |_| open(key.clone(), name.clone())
-                                    >
-                                        "📄 " {label}
-                                        <span class="oss-meta">{meta}</span>
-                                    </button>
+                                    <div class="oss-row oss-file">
+                                        <button
+                                            type="button"
+                                            class="oss-open"
+                                            on:click=move |_| open(key_open.clone(), name_open.clone())
+                                        >
+                                            "📄 " {label}
+                                            <span class="oss-meta">{meta}</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="oss-del"
+                                            title=del_title
+                                            on:click=move |_| del(key_del.clone(), label_del.clone())
+                                        >
+                                            "🗑"
+                                        </button>
+                                    </div>
                                 }
                             }
                         />
