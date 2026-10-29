@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 外链图片（如防盗链图床）在 Referer 为第三方域名时会返回 403；
+       声明 no-referrer 后浏览器请求子资源不带 Referer，图床对空 Referer 放行 -->
+  <meta name="referrer" content="no-referrer">
+  <title>urlnote</title>
+  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/vditor/dist/index.css">
+  <script src="/vditor/dist/index.min.js"></script>
+  <!-- import 转换库：docx→HTML→Markdown，PDF→文本（均本地运行） -->
+  <script src="/mammoth/mammoth.browser.min.js"></script>
+  <script src="/turndown/turndown.js"></script>
+  <script src="/pdfjs/pdf.min.js"></script>
+</head>
+<body>
+  <div id="app"></div>
+  <script src="/wasm_exec.js"></script>
+  <script>
+    (async () => {
+      const go = new Go();
+      const result = await WebAssembly.instantiateStreaming(fetch("/app.wasm"), go.importObject);
+      go.run(result.instance);
+    })().catch((err) => {
+      document.getElementById("app").textContent = "WASM 加载失败: " + err;
+    });
+  </script>
+</body>
+</html>

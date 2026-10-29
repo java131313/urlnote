@@ -1,0 +1,19 @@
+{
+  "name": "urlnote-migrate",
+  "main": "migrate-urlnote.js",
+  "compatibility_date": "2026-10-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "urlnote",
+      "database_id": "3b698e10-d24c-496f-ab58-160d09634a36"
+    }
+  ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "a62501c80f2d4c71841aad1b3ea6f7e3"
+    }
+  ]
+}
