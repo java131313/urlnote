@@ -47,3 +47,6 @@ web-sys = { version = "0.3", features = [
 console_error_panic_hook = "0.1"
 send_wrapper = "0.6"
 shared = { path = "../shared" }
+sha2 = "0.10"
+hmac = "0.12"
+quick-xml = "0.37"

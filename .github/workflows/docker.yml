@@ -23,6 +23,13 @@ env:
   # Cloudflare Worker 地址，在仓库 Settings → Secrets and variables →
   # Actions → Variables 中设置（与 Pages 工作流共用同一个变量）。
   API_BASE: ${{ vars.API_BASE }}
+  # Sealos 对象存储（S3），同 Pages 工作流。AK/SK 用 Secrets；不设也能
+  # 构建，/oss 页只显示“未配置”。注意：它们会被编译进公开的 WASM。
+  OSS_ENDPOINT: objectstorageapi.bja.sealos.run
+  OSS_BUCKET: mpzfivcp-watchwonderful
+  OSS_REGION: us-east-1
+  OSS_AK: ${{ secrets.OSS_AK }}
+  OSS_SK: ${{ secrets.OSS_SK }}
   IMAGE: ghcr.io/${{ github.repository_owner }}/urlnote-frontend
 
 jobs:

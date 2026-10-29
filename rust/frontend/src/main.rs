@@ -4,6 +4,7 @@
 //! markdown editor itself is the same JS library, driven through
 //! wasm-bindgen (see vditor.rs).
 
+mod oss;
 mod vditor;
 
 use gloo_events::EventListener;
@@ -24,7 +25,7 @@ const FONT_STEP: i64 = 2;
 
 // ---- JS helpers ----
 
-fn window() -> web_sys::Window {
+pub(crate) fn window() -> web_sys::Window {
     web_sys::window().expect("window")
 }
 
@@ -52,7 +53,7 @@ fn new_id() -> String {
         .collect()
 }
 
-fn current_time() -> String {
+pub(crate) fn current_time() -> String {
     let s = js_sys::Date::new_0().to_time_string().as_string().unwrap_or_default();
     s.get(..8).unwrap_or(&s).to_string()
 }
@@ -70,7 +71,7 @@ const API_BASE: &str = match option_env!("API_BASE") {
 
 /// URL prefix the frontend is served under ("/urlnote" for a project page).
 /// Empty for root deployments (Cloudflare, a *.github.io user site).
-const BASE_PATH: &str = match option_env!("BASE_PATH") {
+pub(crate) const BASE_PATH: &str = match option_env!("BASE_PATH") {
     Some(v) => v,
     None => "",
 };
@@ -2422,6 +2423,13 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
+    // reserved first path segment: the object-storage file library page
+    // (both sides link to each other; note ids never contain non-alphanumerics
+    // so "oss" can never collide with a real note id)
+    if first_path_segment() == "oss" {
+        return view! { <oss::OssView/> }.into_any();
+    }
+
     // /:id is the note id; "/" redirects to a fresh one
     let id = init_note_id();
 
@@ -2768,6 +2776,23 @@ fn App() -> impl IntoView {
             }}
         </div>
     }
+    .into_any()
+}
+
+/// First URL path segment after BASE_PATH, without any side effects
+/// (init_note_id may rewrite history; route checks must not).
+fn first_path_segment() -> String {
+    let loc = window().location();
+    let raw = loc.pathname().unwrap_or_default();
+    let path = match raw.strip_prefix(BASE_PATH) {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => rest,
+        _ => &raw,
+    };
+    path.trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 fn init_note_id() -> String {
@@ -2983,6 +3008,9 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
             </a>
             <a href=format!("{BASE_PATH}/{}", new_id()) title="新建一个便签">
                 "＋ 新建"
+            </a>
+            <a href=format!("{BASE_PATH}/oss") title="对象存储文件库">
+                "🗂 文件库"
             </a>
             <input
                 class="title-input"

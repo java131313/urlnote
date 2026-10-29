@@ -28,6 +28,13 @@ env:
   API_BASE: ${{ vars.API_BASE }}
   # 项目页面路径前缀（仓库名）。若用 <用户>.github.io 仓库挂根路径，改为空字符串。
   BASE_PATH: /urlnote
+  # Sealos 对象存储（S3）。AK/SK 用 Secrets 存放；即使不设也能构建，
+  # /oss 页只会显示“未配置”。注意：它们会被编译进公开的 WASM。
+  OSS_ENDPOINT: objectstorageapi.bja.sealos.run
+  OSS_BUCKET: mpzfivcp-watchwonderful
+  OSS_REGION: us-east-1
+  OSS_AK: ${{ secrets.OSS_AK }}
+  OSS_SK: ${{ secrets.OSS_SK }}
 
 jobs:
   build:
