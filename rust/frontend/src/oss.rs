@@ -236,39 +236,13 @@ fn apply_sig(
 
 // ---- S3 operations ----
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct OssEntry {
     /// file name relative to the listed prefix
     pub name: String,
     pub key: String,
     pub size: u64,
     pub modified: String,
-}
-
-/// List one directory level: common prefixes (dirs) and files under `prefix`.
-pub async fn list_objects(prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), String> {
-    let query = [
-        ("delimiter", "/"),
-        ("list-type", "2"),
-        ("max-keys", "1000"),
-        ("prefix", prefix),
-    ];
-    let path = format!("/{OSS_BUCKET}");
-    let sig = sign_request("GET", &path, &query, b"", now_ms());
-    let qs = canonical_query(&query);
-    let url = format!("https://{OSS_ENDPOINT}{path}?{qs}");
-    let resp = apply_sig(gloo_net::http::Request::get(&url), &sig)
-        .send()
-        .await
-        .map_err(|e| format!("网络错误: {e}"))?;
-    if !resp.ok() {
-        return Err(format!("列目录失败 (HTTP {})", resp.status()));
-    }
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| format!("响应读取失败: {e}"))?;
-    parse_list(&text, prefix)
 }
 
 pub async fn get_object(key: &str) -> Result<String, String> {
@@ -327,11 +301,137 @@ pub async fn put_object(key: &str, content: &str) -> Result<(), String> {
     }
 }
 
-/// Parse a ListObjectsV2 response into (dir prefixes, files under `prefix`).
-fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), String> {
+// ---- standalone editor ----
+
+// ---- tree ----
+
+/// A directory node. S3 has no real directories — these come from splitting
+/// object keys on `/`, plus zero-byte "name/" marker objects.
+#[derive(Clone, Default, PartialEq)]
+struct TreeNode {
+    /// display name ("" for the synthetic root)
+    name: String,
+    /// full prefix with trailing "/" ("" for root)
+    prefix: String,
+    open: bool,
+    dirs: Vec<TreeNode>,
+    files: Vec<OssEntry>,
+}
+
+impl TreeNode {
+    fn find(&self, prefix: &str) -> Option<&TreeNode> {
+        if self.prefix == prefix {
+            return Some(self);
+        }
+        self.dirs.iter().find_map(|d| d.find(prefix))
+    }
+    fn find_mut(&mut self, prefix: &str) -> Option<&mut TreeNode> {
+        if self.prefix == prefix {
+            return Some(self);
+        }
+        self.dirs.iter_mut().find_map(|d| d.find_mut(prefix))
+    }
+}
+
+/// Build the directory tree from a flat listing. Expansion state is carried
+/// over from the previous tree (matched by prefix) so refreshes keep the
+/// user's view.
+fn build_tree(entries: &[OssEntry], old: Option<&TreeNode>) -> TreeNode {
+    let mut root = TreeNode::default();
+    for e in entries {
+        let parts: Vec<&str> = e.key.split('/').collect();
+        let mut node = &mut root;
+        let mut acc = String::new();
+        for seg in &parts[..parts.len().saturating_sub(1)] {
+            if seg.is_empty() {
+                continue;
+            }
+            acc.push_str(seg);
+            acc.push('/');
+            if !node.dirs.iter().any(|d| d.prefix == acc) {
+                let open = old
+                    .and_then(|o| o.find(&acc))
+                    .map(|n| n.open)
+                    .unwrap_or(false);
+                node.dirs.push(TreeNode {
+                    name: (*seg).to_string(),
+                    prefix: acc.clone(),
+                    open,
+                    dirs: Vec::new(),
+                    files: Vec::new(),
+                });
+            }
+            node = node.dirs.iter_mut().find(|d| d.prefix == acc).unwrap();
+        }
+        let last = parts[parts.len() - 1];
+        if last.is_empty() {
+            // a folder marker object — the dir itself was created above
+        } else {
+            node.files.push(OssEntry {
+                name: last.to_string(),
+                key: e.key.clone(),
+                size: e.size,
+                modified: e.modified.clone(),
+            });
+        }
+    }
+    fn sort_rec(n: &mut TreeNode) {
+        n.dirs.sort_by(|a, b| a.name.cmp(&b.name));
+        n.files.sort_by(|a, b| a.name.cmp(&b.name));
+        for d in &mut n.dirs {
+            sort_rec(d);
+        }
+    }
+    sort_rec(&mut root);
+    root
+}
+
+/// List ALL objects under `prefix` (no delimiter), following pagination.
+pub async fn list_all_entries_under(prefix: &str) -> Result<Vec<OssEntry>, String> {
+    let mut out = Vec::new();
+    let mut token: Option<String> = None;
+    loop {
+        let mut query: Vec<(&str, &str)> = vec![("list-type", "2"), ("max-keys", "1000")];
+        if prefix.is_empty() {
+            query.push(("prefix", ""));
+        } else {
+            query.push(("prefix", prefix));
+        }
+        let tok_storage;
+        if let Some(t) = &token {
+            tok_storage = t.clone();
+            query.push(("continuation-token", &tok_storage));
+        }
+        let path = format!("/{OSS_BUCKET}");
+        let sig = sign_request("GET", &path, &query, b"", now_ms());
+        let qs = canonical_query(&query);
+        let url = format!("https://{OSS_ENDPOINT}{path}?{qs}");
+        let resp = apply_sig(gloo_net::http::Request::get(&url), &sig)
+            .send()
+            .await
+            .map_err(|e| format!("网络错误: {e}"))?;
+        if !resp.ok() {
+            return Err(format!("列举失败 (HTTP {})", resp.status()));
+        }
+        let text = resp.text().await.map_err(|e| format!("响应读取失败: {e}"))?;
+        let (entries, truncated, next) = parse_full_list(&text)?;
+        out.extend(entries);
+        if truncated {
+            token = next;
+        } else {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+/// Parse an unpaginated-style ListObjectsV2 response: entries, IsTruncated,
+/// NextContinuationToken.
+fn parse_full_list(xml: &str) -> Result<(Vec<OssEntry>, bool, Option<String>), String> {
     use quick_xml::events::Event;
-    let mut dirs = Vec::new();
-    let mut files = Vec::new();
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    let mut next_token: Option<String> = None;
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut stack: Vec<String> = Vec::new();
@@ -341,9 +441,7 @@ fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), S
             .read_event()
             .map_err(|e| format!("目录解析失败: {e}"))?;
         match ev {
-            Event::Start(e) => {
-                stack.push(String::from_utf8_lossy(e.name().as_ref()).into_owned());
-            }
+            Event::Start(e) => stack.push(String::from_utf8_lossy(e.name().as_ref()).into_owned()),
             Event::Text(t) => {
                 let parent = stack
                     .len()
@@ -356,15 +454,10 @@ fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), S
                     .unescape()
                     .map_err(|e| format!("目录解析失败: {e}"))?;
                 match (parent, tag) {
-                    ("CommonPrefixes", "Prefix") => dirs.push(s.into_owned()),
                     ("Contents", "Key") => {
                         let key = s.into_owned();
-                        let name = key
-                            .strip_prefix(prefix)
-                            .map(str::to_string)
-                            .unwrap_or_else(|| key.clone());
                         cur = Some(OssEntry {
-                            name,
+                            name: key.clone(),
                             key,
                             size: 0,
                             modified: String::new(),
@@ -380,6 +473,12 @@ fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), S
                             c.modified = s.get(..10).unwrap_or(&s).to_string();
                         }
                     }
+                    ("ListBucketResult", "IsTruncated") => {
+                        truncated = s.trim() == "true";
+                    }
+                    ("ListBucketResult", "NextContinuationToken") => {
+                        next_token = Some(s.into_owned());
+                    }
                     _ => {}
                 }
             }
@@ -387,7 +486,7 @@ fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), S
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 if name == "Contents" {
                     if let Some(c) = cur.take() {
-                        files.push(c);
+                        entries.push(c);
                     }
                 }
                 stack.pop();
@@ -396,22 +495,9 @@ fn parse_list(xml: &str, prefix: &str) -> Result<(Vec<String>, Vec<OssEntry>), S
             _ => {}
         }
     }
-    dirs.sort();
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok((dirs, files))
+    Ok((entries, truncated, next_token))
 }
 
-fn format_size(n: u64) -> String {
-    if n >= 1 << 20 {
-        format!("{:.1} MB", n as f64 / (1 << 20) as f64)
-    } else if n >= 1 << 10 {
-        format!("{:.1} KB", n as f64 / (1 << 10) as f64)
-    } else {
-        format!("{n} B")
-    }
-}
-
-// ---- standalone editor ----
 
 struct OssEditor {
     editor: VditorEditor,
@@ -517,6 +603,375 @@ fn editor_value() -> String {
 
 // ---- page ----
 
+#[derive(Clone, Copy)]
+struct OssCtx {
+    tree: RwSignal<TreeNode>,
+    current: RwSignal<Option<String>>,
+    current_name: RwSignal<String>,
+    dirty: RwSignal<bool>,
+    suppress: RwSignal<f64>,
+    status: RwSignal<String>,
+}
+
+thread_local! {
+    static CTX: RefCell<Option<OssCtx>> = const { RefCell::new(None) };
+}
+
+/// The page has exactly one instance, so handlers live as free functions
+/// reading the installed context — no callback threading through the tree.
+fn ctx() -> OssCtx {
+    CTX.with(|c| *c.borrow().as_ref().expect("oss ctx installed"))
+}
+
+fn sanitize_name(raw: &str) -> Option<String> {
+    let name: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'))
+        .take(120)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    (!name.is_empty() && name != "." && name != "..").then_some(name)
+}
+
+/// (Re)load the whole bucket into the tree, preserving expansion state.
+fn refresh_tree() {
+    let ctx = ctx();
+    ctx.status.set("加载目录…".to_string());
+    spawn_local(async move {
+        match list_all_entries_under("").await {
+            Ok(entries) => {
+                ctx.tree.update(|t| {
+                    let old = std::mem::take(t);
+                    *t = build_tree(&entries, Some(&old));
+                });
+                ctx.status.set(String::new());
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+/// Copy everything under `old_prefix` to `new_prefix`, then delete the
+/// originals. S3 has no rename — GET+PUT per object (markdown scale).
+async fn copy_prefix(old_prefix: &str, new_prefix: &str) -> Result<(), String> {
+    let ctx = ctx();
+    let entries = list_all_entries_under(old_prefix).await?;
+    let total = entries.len();
+    for (i, e) in entries.iter().enumerate() {
+        let Some(rest) = e.key.strip_prefix(old_prefix) else { continue };
+        let target = format!("{new_prefix}{rest}");
+        ctx.status.set(format!("重命名中 ({}/{total})…", i + 1));
+        let content = get_object(&e.key).await?;
+        put_object(&target, &content).await?;
+        delete_object(&e.key).await?;
+    }
+    if total == 0 {
+        // folder had no objects at all — leave a marker so it still exists
+        put_object(new_prefix, "").await?;
+    }
+    Ok(())
+}
+
+async fn rename_file_key(old_key: &str, new_key: &str) -> Result<(), String> {
+    let content = get_object(old_key).await?;
+    put_object(new_key, &content).await?;
+    delete_object(old_key).await
+}
+
+fn open_file(key: String, name: String) {
+    let ctx = ctx();
+    ctx.status.set(format!("载入 {name}…"));
+    spawn_local(async move {
+        match get_object(&key).await {
+            Ok(text) => {
+                ctx.suppress.set(js_sys::Date::now() + 500.0);
+                set_editor_value(&text);
+                ctx.current.set(Some(key));
+                ctx.current_name.set(name.clone());
+                ctx.dirty.set(false);
+                if let Some(doc) = window().document() {
+                    doc.set_title(&format!("{name} · 文件库"));
+                }
+                ctx.status.set(format!("已载入 {name}"));
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+fn save_current() {
+    let ctx = ctx();
+    let Some(key) = ctx.current.get() else { return };
+    let content = editor_value();
+    ctx.status.set("保存中…".to_string());
+    spawn_local(async move {
+        match put_object(&key, &content).await {
+            Ok(()) => {
+                ctx.dirty.set(false);
+                ctx.status.set(format!("已保存 {}", current_time()));
+                refresh_tree();
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+/// Rebase the open-file state if `old` was renamed to `new_prefix`,
+/// or clear it when the file was deleted.
+fn fix_current_after_move(old: &str, new_prefix: Option<&str>) {
+    let ctx = ctx();
+    let Some(cur) = ctx.current.get() else { return };
+    let affected = if old.ends_with('/') {
+        cur.starts_with(old)
+    } else {
+        cur == old
+    };
+    if !affected {
+        return;
+    }
+    match new_prefix {
+        Some(np) => {
+            let rest = cur.strip_prefix(old).unwrap_or("");
+            let new_key = format!("{np}{rest}");
+            let new_name = new_key.rsplit('/').next().unwrap_or(&new_key).to_string();
+            ctx.current.set(Some(new_key));
+            ctx.current_name.set(new_name);
+        }
+        None => {
+            ctx.current.set(None);
+            ctx.current_name.set(String::new());
+            ctx.dirty.set(false);
+            set_editor_value("");
+            if let Some(doc) = window().document() {
+                doc.set_title("文件库");
+            }
+        }
+    }
+}
+
+fn create_in(dir_prefix: String, is_dir: bool) {
+    let ctx = ctx();
+    let what = if is_dir { "文件夹" } else { "文件" };
+    let Some(name) = window()
+        .prompt_with_message(&format!("在 {dir_prefix} 下新建{what}："))
+        .ok()
+        .flatten()
+        .and_then(|raw| sanitize_name(&raw))
+    else {
+        return;
+    };
+    let (key, content, final_name) = if is_dir {
+        (format!("{dir_prefix}{name}/"), String::new(), name)
+    } else {
+        let final_name = if name.contains('.') { name.clone() } else { format!("{name}.md") };
+        let key = format!("{dir_prefix}{final_name}");
+        (key, format!("# {final_name}\n"), final_name)
+    };
+    ctx.status.set(format!("创建 {final_name}…"));
+    spawn_local(async move {
+        if !is_dir && object_exists(&key).await
+            && !window()
+                .confirm_with_message(&format!("{final_name} 已存在，覆盖它？"))
+                .unwrap_or(false)
+        {
+            ctx.status.set("已取消".to_string());
+            return;
+        }
+        match put_object(&key, &content).await {
+            Ok(()) => {
+                ctx.status.set(format!("已创建 {final_name}"));
+                refresh_tree();
+                if !is_dir {
+                    open_file(key, final_name);
+                }
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+fn rename_entry(path: String, is_dir: bool) {
+    let ctx = ctx();
+    let old_name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let Some(name) = window()
+        .prompt_with_message(&format!("将 {old_name} 重命名为："))
+        .ok()
+        .flatten()
+        .and_then(|raw| sanitize_name(&raw))
+    else {
+        return;
+    };
+    let parent = path
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .map(|(p, _)| format!("{p}/"))
+        .unwrap_or_default();
+    let (new_path, confirm_msg) = if is_dir {
+        (
+            format!("{parent}{name}/"),
+            format!("文件夹内的所有文件将移动到 {parent}{name}/，继续？"),
+        )
+    } else {
+        let final_name = if name.contains('.') { name.clone() } else { format!("{name}.md") };
+        (
+            format!("{parent}{final_name}"),
+            format!("确定重命名为 {final_name}？"),
+        )
+    };
+    if new_path == path {
+        return;
+    }
+    if !window()
+        .confirm_with_message(&confirm_msg)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    ctx.status.set(format!("重命名 {old_name}…"));
+    spawn_local(async move {
+        let r = if is_dir {
+            copy_prefix(&path, &new_path).await
+        } else {
+            rename_file_key(&path, &new_path).await
+        };
+        match r {
+            Ok(()) => {
+                fix_current_after_move(&path, Some(&new_path));
+                ctx.status.set(format!("已重命名为 {name}"));
+                refresh_tree();
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+fn delete_entry(path: String, is_dir: bool) {
+    let ctx = ctx();
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let hint = if is_dir { "（仅限空文件夹）" } else { "" };
+    if !window()
+        .confirm_with_message(&format!("删除 {name}{hint}？此操作不可恢复。"))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    ctx.status.set(format!("删除 {name}…"));
+    spawn_local(async move {
+        let r = if is_dir {
+            // only empty folders: anything besides the marker blocks it
+            match list_all_entries_under(&path).await {
+                Ok(entries) if entries.iter().any(|e| e.key != path) => {
+                    Err("文件夹非空，请先删除其中的文件".to_string())
+                }
+                Ok(_) => delete_object(&path).await,
+                Err(e) => Err(e),
+            }
+        } else {
+            delete_object(&path).await
+        };
+        match r {
+            Ok(()) => {
+                fix_current_after_move(&path, None);
+                ctx.status.set(format!("已删除 {name}"));
+                refresh_tree();
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+#[component]
+fn TreeDir(prefix: String) -> AnyView {
+    let ctx = ctx();
+    let p_memo = prefix.clone();
+    let node = Memo::new(move |_| ctx.tree.with(|t| t.find(&p_memo).cloned()));
+    let p_newfile = prefix.clone();
+    let p_newdir = prefix.clone();
+    let p_ren = prefix.clone();
+    let p_del = prefix.clone();
+    view! {
+        <div class="oss-tdir">
+            <div
+                class="oss-trow"
+                on:click=move |_| ctx.tree.update(|t| {
+                    if let Some(n) = t.find_mut(&prefix.clone()) {
+                        n.open = !n.open;
+                    }
+                })
+            >
+                <span class="oss-ticon">{move || {
+                    node.with(|n| if n.as_ref().map(|n| n.open).unwrap_or(false) { "📂" } else { "📁" })
+                }}</span>
+                <span class="oss-tname">{move || node.with(|n| n.as_ref().map(|n| n.name.clone()).unwrap_or_default())}</span>
+                <span class="oss-tact">
+                    <button type="button" title="在此新建文件" on:click=move |ev| {
+                        ev.stop_propagation();
+                        create_in(p_newfile.clone(), false);
+                    }>"＋📄"</button>
+                    <button type="button" title="在此新建文件夹" on:click=move |ev| {
+                        ev.stop_propagation();
+                        create_in(p_newdir.clone(), true);
+                    }>"＋📁"</button>
+                    <button type="button" title="重命名文件夹" on:click=move |ev| {
+                        ev.stop_propagation();
+                        rename_entry(p_ren.clone(), true);
+                    }>"✏️"</button>
+                    <button type="button" title="删除文件夹（仅限空文件夹）" on:click=move |ev| {
+                        ev.stop_propagation();
+                        delete_entry(p_del.clone(), true);
+                    }>"🗑"</button>
+                </span>
+            </div>
+            <Show when=move || node.with(|n| n.as_ref().map(|n| n.open).unwrap_or(false))>
+                <div class="oss-tkids">
+                    <For
+                        each=move || node.with(|n| n.as_ref().map(|n| n.dirs.clone()).unwrap_or_default())
+                        key=|d| d.prefix.clone()
+                        children=move |d| view! { <TreeDir prefix=d.prefix.clone()/> }
+                    />
+                    <For
+                        each=move || node.with(|n| n.as_ref().map(|n| n.files.clone()).unwrap_or_default())
+                        key=|f| f.key.clone()
+                        children=move |f| {
+                            let key_open = f.key.clone();
+                            let name_open = f.name.clone();
+                            let key_ren = f.key.clone();
+                            let key_del = f.key.clone();
+                            let label = f.name.clone();
+                            view! {
+                                <div class="oss-trow oss-tfile">
+                                    <button type="button" class="oss-open"
+                                        on:click=move |_| open_file(key_open.clone(), name_open.clone())
+                                    >
+                                        <span class="oss-ticon">"📄"</span>
+                                        <span class="oss-tname">{label}</span>
+                                    </button>
+                                    <span class="oss-tact">
+                                        <button type="button" title="重命名文件" on:click=move |_| rename_entry(key_ren.clone(), false)>"✏️"</button>
+                                        <button type="button" title="删除文件" on:click=move |_| delete_entry(key_del.clone(), false)>"🗑"</button>
+                                    </span>
+                                </div>
+                            }
+                        }
+                    />
+                </div>
+            </Show>
+        </div>
+    }
+    .into_any()
+}
+
 #[component]
 pub fn OssView() -> impl IntoView {
     if !OSS_ENABLED {
@@ -532,17 +987,17 @@ pub fn OssView() -> impl IntoView {
         .into_any();
     }
 
-    let prefix = RwSignal::new(String::new());
-    let dirs = RwSignal::new(Vec::<String>::new());
-    let files = RwSignal::new(Vec::<OssEntry>::new());
-    let loading = RwSignal::new(true);
-    let current = RwSignal::new(Option::<String>::None);
-    let current_name = RwSignal::new(String::new());
-    let dirty = RwSignal::new(false);
-    let status = RwSignal::new(String::new());
+    let ctx = OssCtx {
+        tree: RwSignal::new(TreeNode::default()),
+        current: RwSignal::new(None),
+        current_name: RwSignal::new(String::new()),
+        dirty: RwSignal::new(false),
+        suppress: RwSignal::new(0.0f64),
+        status: RwSignal::new(String::new()),
+    };
+    CTX.with(|c| *c.borrow_mut() = Some(ctx));
+
     let editor_ref = NodeRef::<Div>::new();
-    // ignore vditor's async input echo for 500ms after programmatic set_value
-    let suppress_input = RwSignal::new(0.0f64);
 
     // editor: init once when the mount node appears; input marks dirty
     Effect::new(move |_| {
@@ -552,8 +1007,8 @@ pub fn OssView() -> impl IntoView {
             return;
         }
         if let Some(el) = editor_ref.get() {
-            let d = dirty;
-            let sup = suppress_input;
+            let d = ctx.dirty;
+            let sup = ctx.suppress;
             let cb = Closure::<dyn FnMut()>::new(move || {
                 // Vditor fires input asynchronously right after set_value —
                 // that echo is not a user edit
@@ -563,200 +1018,14 @@ pub fn OssView() -> impl IntoView {
                 d.set(true);
             });
             if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb) {
-                status.set(e);
+                ctx.status.set(e);
             }
         }
     });
 
-    // listing: reload whenever the prefix changes (also on first mount)
+    // first tree load
     Effect::new(move |_| {
-        let p = prefix.get();
-        loading.set(true);
-        spawn_local(async move {
-            match list_objects(&p).await {
-                Ok((d, f)) => {
-                    dirs.set(d);
-                    files.set(f);
-                    loading.set(false);
-                }
-                Err(e) => {
-                    status.set(e);
-                    loading.set(false);
-                }
-            }
-        });
-    });
-
-    let open_file = move |key: String, name: String| {
-        status.set(format!("载入 {name}…"));
-        spawn_local(async move {
-            match get_object(&key).await {
-                Ok(text) => {
-                    suppress_input.set(js_sys::Date::now() + 500.0);
-                    set_editor_value(&text);
-                    current.set(Some(key));
-                    current_name.set(name.clone());
-                    dirty.set(false);
-                    if let Some(doc) = window().document() {
-                        doc.set_title(&format!("{name} · 文件库"));
-                    }
-                    status.set(format!("已载入 {name}"));
-                }
-                Err(e) => status.set(e),
-            }
-        });
-    };
-
-    let save = move |_| {
-        let Some(key) = current.get() else { return };
-        let content = editor_value();
-        status.set("保存中…".to_string());
-        spawn_local(async move {
-            match put_object(&key, &content).await {
-                Ok(()) => {
-                    dirty.set(false);
-                    status.set(format!("已保存 {}", current_time()));
-                }
-                Err(e) => status.set(e),
-            }
-        });
-    };
-
-    // ---- create / delete ----
-
-    let refresh_list = move || {
-        let p = prefix.get();
-        loading.set(true);
-        spawn_local(async move {
-            match list_objects(&p).await {
-                Ok((d, f)) => {
-                    dirs.set(d);
-                    files.set(f);
-                    loading.set(false);
-                }
-                Err(e) => {
-                    status.set(e);
-                    loading.set(false);
-                }
-            }
-        });
-    };
-
-    let sanitize_name = |raw: &str| -> Option<String> {
-        let name: String = raw
-            .chars()
-            .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'))
-            .take(120)
-            .collect::<String>()
-            .trim()
-            .to_string();
-        (!name.is_empty() && name != "." && name != "..").then_some(name)
-    };
-
-    let create_file = move |_| {
-        let Some(name) = window()
-            .prompt_with_message("在当前目录新建文件（可不带 .md 后缀）：")
-            .ok()
-            .flatten()
-            .and_then(|raw| sanitize_name(&raw))
-        else {
-            return;
-        };
-        let name = if name.contains('.') {
-            name
-        } else {
-            format!("{name}.md")
-        };
-        let key = format!("{}{}", prefix.get(), name);
-        let content = format!("# {name}\n");
-        let open = open_file;
-        status.set(format!("创建 {name}…"));
-        spawn_local(async move {
-            if object_exists(&key).await
-                && !window()
-                    .confirm_with_message(&format!("{name} 已存在，覆盖它？"))
-                    .unwrap_or(false)
-            {
-                status.set("已取消".to_string());
-                return;
-            }
-            match put_object(&key, &content).await {
-                Ok(()) => {
-                    status.set(format!("已创建 {name}"));
-                    refresh_list();
-                    open(key, name);
-                }
-                Err(e) => status.set(e),
-            }
-        });
-    };
-
-    let create_folder = move |_| {
-        let Some(name) = window()
-            .prompt_with_message("在当前目录新建文件夹：")
-            .ok()
-            .flatten()
-            .and_then(|raw| sanitize_name(&raw))
-        else {
-            return;
-        };
-        // S3 has no real directories — a zero-byte "name/" marker object
-        // makes the prefix show up in delimiter listings.
-        let key = format!("{}{}/", prefix.get(), name);
-        status.set(format!("创建 {name}/…"));
-        spawn_local(async move {
-            match put_object(&key, "").await {
-                Ok(()) => {
-                    status.set(format!("已创建 {name}/"));
-                    refresh_list();
-                }
-                Err(e) => status.set(e),
-            }
-        });
-    };
-
-    let delete_file = move |key: String, name: String| {
-        if !window()
-            .confirm_with_message(&format!("删除 {name}？此操作不可恢复。"))
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let is_open = current.get().as_deref() == Some(key.as_str());
-        status.set(format!("删除 {name}…"));
-        spawn_local(async move {
-            match delete_object(&key).await {
-                Ok(()) => {
-                    if is_open {
-                        current.set(None);
-                        current_name.set(String::new());
-                        dirty.set(false);
-                        set_editor_value("");
-                        if let Some(doc) = window().document() {
-                            doc.set_title("文件库");
-                        }
-                    }
-                    status.set(format!("已删除 {name}"));
-                    refresh_list();
-                }
-                Err(e) => status.set(e),
-            }
-        });
-    };
-
-    let crumbs = Memo::new(move |_| {
-        let p = prefix.get();
-        let mut items = vec![("根目录".to_string(), String::new())];
-        let mut acc = String::new();
-        for seg in p.trim_end_matches('/').split('/') {
-            if seg.is_empty() {
-                continue;
-            }
-            acc.push_str(seg);
-            acc.push('/');
-            items.push((seg.to_string(), acc.clone()));
-        }
-        items
+        refresh_tree();
     });
 
     view! {
@@ -765,108 +1034,64 @@ pub fn OssView() -> impl IntoView {
                 <a class="oss-home" href=format!("{BASE_PATH}/") title="返回便签页面">"📝 便签"</a>
                 <span class="oss-brand">"🗂 文件库"</span>
                 <span class="oss-spacer"></span>
+                <button type="button" class="tool" on:click=move |_| refresh_tree() title="重新加载目录">
+                    "🔄"
+                </button>
                 <button
                     type="button"
                     class="tool oss-save"
-                    prop:disabled=move || !(dirty.get() && current.get().is_some())
-                    on:click=save
+                    prop:disabled=move || !(ctx.dirty.get() && ctx.current.get().is_some())
+                    on:click=move |_| save_current()
                     title="保存回对象存储"
                 >
                     "💾 保存"
                 </button>
-                <span class="oss-status">{move || status.get()}</span>
+                <span class="oss-status">{move || ctx.status.get()}</span>
             </div>
             <div class="oss-body">
                 <aside class="oss-side">
-                    <nav class="oss-crumb">
-                        <For
-                            each=move || crumbs.get()
-                            key=|(_, p)| p.clone()
-                            children=move |(name, p)| {
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="oss-crumb-item"
-                                        on:click=move |_| prefix.set(p.clone())
-                                    >
-                                        {name}
-                                    </button>
-                                }
-                            }
-                        />
-                    </nav>
                     <div class="oss-tools">
-                        <button type="button" class="tool" on:click=create_file title="在当前目录新建 Markdown 文件">
+                        <button type="button" class="tool" on:click=move |_| create_in(String::new(), false) title="在根目录新建 Markdown 文件">
                             "＋ 文件"
                         </button>
-                        <button type="button" class="tool" on:click=create_folder title="在当前目录新建文件夹">
+                        <button type="button" class="tool" on:click=move |_| create_in(String::new(), true) title="在根目录新建文件夹">
                             "＋ 文件夹"
                         </button>
                     </div>
-                    <div class="oss-list">
+                    <div class="oss-tree">
                         {move || {
-                            if loading.get() {
-                                view! { <div class="oss-hint">"加载中…"</div> }.into_any()
-                            } else if dirs.get().is_empty() && files.get().is_empty() {
-                                view! { <div class="oss-hint">"（空目录）"</div> }.into_any()
+                            if ctx.tree.with(|t| t.dirs.is_empty() && t.files.is_empty()) {
+                                view! { <div class="oss-hint">"（空桶，点上方按钮新建）"</div> }.into_any()
                             } else {
                                 view! { <span style="display:none"></span> }.into_any()
                             }
                         }}
                         <For
-                            each=move || dirs.get()
-                            key=|d| d.clone()
-                            children=move |d| {
-                                let name = d
-                                    .trim_end_matches('/')
-                                    .rsplit('/')
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_string();
-                                let target = d.clone();
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="oss-row oss-dir"
-                                        on:click=move |_| prefix.set(target.clone())
-                                    >
-                                        "📁 " {name}
-                                    </button>
-                                }
-                            }
+                            each=move || ctx.tree.with(|t| t.dirs.clone())
+                            key=|d| d.prefix.clone()
+                            children=move |d| view! { <TreeDir prefix=d.prefix.clone()/> }
                         />
                         <For
-                            each=move || files.get()
+                            each=move || ctx.tree.with(|t| t.files.clone())
                             key=|f| f.key.clone()
                             children=move |f| {
-                                let name = f.name.clone();
-                                let label = name.clone();
-                                let meta = format!("{} · {}", format_size(f.size), f.modified);
-                                let open = open_file;
-                                let del = delete_file;
                                 let key_open = f.key.clone();
-                                let name_open = name.clone();
+                                let name_open = f.name.clone();
+                                let key_ren = f.key.clone();
                                 let key_del = f.key.clone();
-                                let label_del = label.clone();
-                                let del_title = format!("删除 {label}");
+                                let label = f.name.clone();
                                 view! {
-                                    <div class="oss-row oss-file">
-                                        <button
-                                            type="button"
-                                            class="oss-open"
-                                            on:click=move |_| open(key_open.clone(), name_open.clone())
+                                    <div class="oss-trow oss-tfile">
+                                        <button type="button" class="oss-open"
+                                            on:click=move |_| open_file(key_open.clone(), name_open.clone())
                                         >
-                                            "📄 " {label}
-                                            <span class="oss-meta">{meta}</span>
+                                            <span class="oss-ticon">"📄"</span>
+                                            <span class="oss-tname">{label}</span>
                                         </button>
-                                        <button
-                                            type="button"
-                                            class="oss-del"
-                                            title=del_title
-                                            on:click=move |_| del(key_del.clone(), label_del.clone())
-                                        >
-                                            "🗑"
-                                        </button>
+                                        <span class="oss-tact">
+                                            <button type="button" title="重命名文件" on:click=move |_| rename_entry(key_ren.clone(), false)>"✏️"</button>
+                                            <button type="button" title="删除文件" on:click=move |_| delete_entry(key_del.clone(), false)>"🗑"</button>
+                                        </span>
                                     </div>
                                 }
                             }
@@ -875,9 +1100,9 @@ pub fn OssView() -> impl IntoView {
                 </aside>
                 <main class="oss-main">
                     <div class="oss-filebar">
-                        {move || current_name.get()}
+                        {move || ctx.current_name.get()}
                         {move || {
-                            (dirty.get() && current.get().is_some())
+                            (ctx.dirty.get() && ctx.current.get().is_some())
                                 .then(|| view! { <span class="oss-dirty">"● 未保存"</span> })
                         }}
                     </div>
@@ -936,20 +1161,35 @@ mod tests {
     }
 
     #[test]
-    fn list_xml_parses_dirs_and_files() {
+    fn full_list_parses_and_paginates() {
         let xml = r#"<?xml version="1.0"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-        <Name>b</Name><Prefix>docs/</Prefix><KeyCount>3</KeyCount>
-        <CommonPrefixes><Prefix>docs/sub/</Prefix></CommonPrefixes>
-        <Contents><Key>docs/a.md</Key><LastModified>2026-10-28T23:27:57.331Z</LastModified><Size>21497</Size></Contents>
-        <Contents><Key>docs/b.md</Key><LastModified>2026-10-29T01:00:00.000Z</LastModified><Size>100</Size></Contents>
+        <IsTruncated>true</IsTruncated><NextContinuationToken>tok123</NextContinuationToken>
+        <Contents><Key>a/b.md</Key><LastModified>2026-10-28T23:27:57.331Z</LastModified><Size>10</Size></Contents>
         </ListBucketResult>"#;
-        let (dirs, files) = parse_list(xml, "docs/").unwrap();
-        assert_eq!(dirs, vec!["docs/sub/".to_string()]);
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].name, "a.md");
-        assert_eq!(files[0].size, 21497);
-        assert_eq!(files[0].modified, "2026-10-28");
-        assert_eq!(files[1].name, "b.md");
+        let (entries, truncated, token) = parse_full_list(xml).unwrap();
+        assert!(truncated);
+        assert_eq!(token.as_deref(), Some("tok123"));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "a/b.md");
+    }
+
+    #[test]
+    fn tree_builds_nested_dirs_and_skips_markers() {
+        let entries = vec![
+            OssEntry { name: "a/b.md".into(), key: "a/b.md".into(), size: 1, modified: String::new() },
+            OssEntry { name: "a/c/d.md".into(), key: "a/c/d.md".into(), size: 1, modified: String::new() },
+            OssEntry { name: "a/".into(), key: "a/".into(), size: 0, modified: String::new() },
+            OssEntry { name: "root.md".into(), key: "root.md".into(), size: 1, modified: String::new() },
+        ];
+        let tree = build_tree(&entries, None);
+        assert_eq!(tree.files.len(), 1);
+        assert_eq!(tree.dirs.len(), 1);
+        let a = &tree.dirs[0];
+        assert_eq!(a.prefix, "a/");
+        assert_eq!(a.files.len(), 1);
+        assert_eq!(a.dirs.len(), 1);
+        assert_eq!(a.dirs[0].prefix, "a/c/");
+        assert_eq!(a.dirs[0].files[0].name, "d.md");
     }
 }
 
