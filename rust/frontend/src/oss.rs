@@ -910,6 +910,10 @@ fn TreeDir(prefix: String) -> AnyView {
                     }
                 })
             >
+                <span
+                    class="oss-chev"
+                    class:oss-chev-open=move || node.with(|n| n.as_ref().map(|n| n.open).unwrap_or(false))
+                >"▸"</span>
                 <span class="oss-ticon">{move || {
                     node.with(|n| if n.as_ref().map(|n| n.open).unwrap_or(false) { "📂" } else { "📁" })
                 }}</span>
@@ -948,9 +952,14 @@ fn TreeDir(prefix: String) -> AnyView {
                             let name_open = f.name.clone();
                             let key_ren = f.key.clone();
                             let key_del = f.key.clone();
+                            let key_active = f.key.clone();
                             let label = f.name.clone();
+                            let ctx2 = ctx;
                             view! {
-                                <div class="oss-trow oss-tfile">
+                                <div
+                                    class="oss-trow oss-tfile"
+                                    class:oss-active=move || ctx2.current.get().as_deref() == Some(key_active.as_str())
+                                >
                                     <button type="button" class="oss-open"
                                         on:click=move |_| open_file(key_open.clone(), name_open.clone())
                                     >
@@ -1079,9 +1088,13 @@ pub fn OssView() -> impl IntoView {
                                 let name_open = f.name.clone();
                                 let key_ren = f.key.clone();
                                 let key_del = f.key.clone();
+                                let key_active = f.key.clone();
                                 let label = f.name.clone();
                                 view! {
-                                    <div class="oss-trow oss-tfile">
+                                    <div
+                                        class="oss-trow oss-tfile"
+                                        class:oss-active=move || ctx.current.get().as_deref() == Some(key_active.as_str())
+                                    >
                                         <button type="button" class="oss-open"
                                             on:click=move |_| open_file(key_open.clone(), name_open.clone())
                                         >
