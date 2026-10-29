@@ -424,7 +424,7 @@ thread_local! {
     static OSS_EDITOR: RefCell<Option<OssEditor>> = const { RefCell::new(None) };
 }
 
-fn init_editor(mount: &web_sys::Element, on_input: &Closure<dyn FnMut()>) -> Result<(), String> {
+fn init_editor(mount: &web_sys::Element, on_input: Closure<dyn FnMut()>) -> Result<(), String> {
     let dark = window()
         .match_media("(prefers-color-scheme: dark)")
         .ok()
@@ -485,10 +485,14 @@ fn init_editor(mount: &web_sys::Element, on_input: &Closure<dyn FnMut()>) -> Res
     set("toolbar", &toolbar.into());
 
     let editor = VditorEditor::new(mount, options.into());
+    // into_js_value leaks the closure — dropping a Closure invalidates its JS
+    // function, which would silently kill the input callback (and with it
+    // dirty tracking, leaving the save button permanently disabled)
+    let cb = on_input.into_js_value();
     OSS_EDITOR.with(|c| {
         *c.borrow_mut() = Some(OssEditor {
             editor,
-            cbs: vec![on_input.as_ref().clone()],
+            cbs: vec![cb],
         });
     });
     Ok(())
@@ -537,6 +541,8 @@ pub fn OssView() -> impl IntoView {
     let dirty = RwSignal::new(false);
     let status = RwSignal::new(String::new());
     let editor_ref = NodeRef::<Div>::new();
+    // ignore vditor's async input echo for 500ms after programmatic set_value
+    let suppress_input = RwSignal::new(0.0f64);
 
     // editor: init once when the mount node appears; input marks dirty
     Effect::new(move |_| {
@@ -547,8 +553,16 @@ pub fn OssView() -> impl IntoView {
         }
         if let Some(el) = editor_ref.get() {
             let d = dirty;
-            let cb = Closure::<dyn FnMut()>::new(move || d.set(true));
-            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), &cb) {
+            let sup = suppress_input;
+            let cb = Closure::<dyn FnMut()>::new(move || {
+                // Vditor fires input asynchronously right after set_value —
+                // that echo is not a user edit
+                if js_sys::Date::now() < sup.get() {
+                    return;
+                }
+                d.set(true);
+            });
+            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb) {
                 status.set(e);
             }
         }
@@ -578,6 +592,7 @@ pub fn OssView() -> impl IntoView {
         spawn_local(async move {
             match get_object(&key).await {
                 Ok(text) => {
+                    suppress_input.set(js_sys::Date::now() + 500.0);
                     set_editor_value(&text);
                     current.set(Some(key));
                     current_name.set(name.clone());
