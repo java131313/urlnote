@@ -7,23 +7,24 @@
 - **前端** — Rust + [Leptos](https://leptos.dev/) 编译为 WebAssembly（[Trunk](https://trunkrs.dev/) 构建），由 Cloudflare Workers Static Assets 托管；Markdown 编辑器为 Vditor（JS 库，通过 wasm-bindgen 驱动）
 - **后端** — Rust 编译为 WebAssembly，运行在 Cloudflare Worker 上（[workers-rs](https://github.com/cloudflare/workers-rs) SDK）
 - **数据库** — Cloudflare D1（SQLite）
-- **缓存/会话/图片** — Workers KV（响应缓存 write-through、session、presence 心跳、上传图片）
+- **缓存/会话/图片** — Workers KV（session、presence 心跳、上传图片；响应缓存由进程内 LRU 承担）
+- **Go 重写版 Worker（备选）** — `goback/` 可编译为 WASM Worker（`make go-wasm`），
+  连接同一个 D1、共用 KV key 布局，用 `wrangler-go.toml` 独立部署（见「Go Worker（备选）」）
 - **旧实现保留** — Go 后端（`main.go`，workers-go）与 Vue 前端（`frontend/`）完整保留，可一键回滚（见下文）
 
 ```
 浏览器 ──▶ Cloudflare Edge
             ├─ 命中静态文件 ──▶ Workers Static Assets（Leptos 应用 + Vditor 运行时资源）
-            └─ /api/*、/:id ──▶ Rust(WASM) Worker ──┬─ GET：Workers KV 命中直接返回（miss 回源 D1 并回填）
-                                                    ├─ PUT/POST：先写 D1，再 write-through 同步 KV
+            └─ /api/*、/:id ──▶ Rust(WASM) Worker ──┬─ GET：进程内 LRU 命中直接返回（miss 回源 D1 并回填）
+                                                    ├─ PUT/POST：写 D1 并更新 LRU
                                                     └─ /:id ──▶ index.html（ASSETS binding）
 ```
 
-**缓存一致性**：Workers KV 保存每个便签 API 响应的副本（key 为 `v4/notes/{id}.json`），
-通过 write-through 与 D1 保持一致；若 KV 写入失败会删除对应 key 使其回源 D1，
-不会出现脏读。响应头 `X-Cache: HIT/MISS` 可观察缓存状态。
-注意：绕过 API 直接改 D1（如 wrangler d1 execute）不会自动同步缓存，
-需同步删除对应 KV key（`wrangler kv key delete v4/notes/{id}.json --namespace-id <id>`）。
-Rust 与 Go 两个 Worker 使用相同的 KV key 布局与 JSON 结构，灰度切换期间缓存可以互相命中。
+**缓存一致性**：默认的 Rust Worker 用进程内 LRU（512 条，便签 TTL 30s、索引 TTL 15s，
+D1 兜底）缓存响应，写操作先落 D1 再更新/失效缓存，不会出现脏读；响应头 `X-Cache: HIT/MISS`
+可观察命中。绕过 API 直接改 D1（如 `wrangler d1 execute`）时，最坏要等一个 TTL 才会看到新值。
+Go 版 Worker（备选）没有跨请求的进程内状态，改为 KV write-through（key 同为 `v4/notes/{id}.json`、
+`v4/index.json`，TTL 下限 60s），因此两套实现的缓存可以互相命中，切换无迁移成本。
 
 ## 部署
 
@@ -71,6 +72,50 @@ binding = "ASSETS"
 ```
 
 数据库、KV、API 契约完全一致，回滚无数据迁移成本。
+
+## Go Worker（备选）
+
+`goback/` 是 Go 重写版后端，连接 Cloudflare D1 并编译为 WASM Worker（`GOOS=js GOARCH=wasm`，
+由 [syumai/workers-go](https://github.com/syumai/workers-go) 驱动）。它与默认的 Rust worker
+**共用同一个 D1 库与 KV 命名空间**（`v4/*`、`img/*` key 布局一致），
+但使用独立的配置和 Worker 名称，不影响默认部署：
+
+```bash
+make go-wasm       # goback/cmd/worker → goback/build/{worker.mjs,app.wasm}
+make dev-go        # npx wrangler dev --config wrangler-go.toml
+make deploy-go     # npx wrangler deploy --config wrangler-go.toml
+make dry-run-go    # 只做打包校验，不联网部署
+```
+
+- `wrangler-go.toml`：Worker 名 `urlnote-go`，`main = ./goback/build/worker.mjs`，
+  D1 绑定 `DB`、KV 绑定 `CACHE`、Static Assets 目录 `./goback/static`
+- 默认的 `wrangler.toml` 保持指向 Rust worker，两套实现可以并行部署对比
+- 想彻底替换默认 worker：把 `wrangler.toml` 的 `main` / `[build]` / `[assets]`
+  换成 `wrangler-go.toml` 的对应值即可（回滚就把原值放回）
+- 首次仍需 `make create-db` / `make init-db`（若 Rust 版已初始化则无需重复）
+
+已知差异（详见 `goback/README.md`）：WASM 无法链接 cgo，中文分词使用纯 Go 启发式
+（搜索仍为词级语义，但召回/排序与 jieba 不同）；日文分词在 wasm 下不可用；
+缓存改为 KV write-through，TTL 下限 60 秒。
+
+### 两套实现的实测对比
+
+两套实现的 API 契约、D1 表结构、KV key 布局完全一致，可随时互切、无需数据迁移。
+以下是本机构建产物的实测对比（`worker-build` 与 `make go-wasm` 各跑一次）：
+
+| 维度 | Rust Worker（默认） | Go WASM Worker（备选） |
+|---|---|---|
+| 包体 | 7.22 MiB（gzip 2.67 MiB） | 11.31 MiB（gzip 2.98 MiB，大 36%） |
+| 中文分词 | jieba-rs，完整词典 | wasm 只能用 2 字切分启发式（gojieba 是 cgo，编不进 wasm） |
+| 日文分词 | IPADIC（vibrato + ruzstd，词典从 ASSETS 加载） | 不可用 |
+| 响应缓存 | 进程内 LRU（isolate 内 wasm 实例复用，省 KV 写配额） | 每请求重建 Go runtime，静态变量不保留，只能 KV write-through |
+| 依赖/工具链 | worker 0.8（官方）+ 13 个 crate，需 cargo/worker-build/trunk | workers-go（社区）1 个依赖，只需 go |
+
+结论：Rust 在包体（小 36%）、冷启动、分词质量与日文支持上更优，因此保持默认
+（Go 的 `net/http` 连带 crypto/tls/x509/net 是主要负担：最小 handler 程序实测
+4.5 MiB 未压缩 / 1.3 MiB gzip，其中约 0.8 MiB gzip 来自 `net/http` 本身，属 js/wasm
+固有成本）。Go 版的优势是只需 Go 工具链、业务与 SQL 更易维护，建议仅在"必须用 Go
+维护后端"时替换默认实现。
 
 ## 使用
 
@@ -134,11 +179,16 @@ rust/
   shared/        # 前后端共用的 API 类型与校验逻辑（JSON 契约与 Go 版一致）
   worker/        # Rust Cloudflare Worker（workers-rs，编译为 WASM）
   frontend/      # Rust + Leptos 前端（Trunk 构建；Vditor 运行时资源从 npm 包拷入 static/）
+goback/          # Go 重写版后端（备选）：D1 + KV + ASSETS + cron，编译为 WASM
+  cmd/worker/    #   Worker 入口
+  internal/      #   api / store(D1 SQLite) / token / analyze
+  static/        #   Go WASM 前端与 Vditor 运行时资源
 main.go          # 旧 Go Worker：API 路由 + SPA 回退（保留，make build-go 可构建）
 frontend/        # 旧 Vue 3 前端（保留，供回滚）
 schema.sql       # D1 建表语句（含 editor settings 列）
 migrations/      # 已部署数据库的增量迁移
-wrangler.toml    # Worker / D1 / Assets 配置
-Makefile         # build（Rust）/ build-go（Go）/ dev / deploy / 数据库初始化
+wrangler.toml      # 默认：Rust Worker / D1 / Assets 配置
+wrangler-go.toml   # 备选：Go Worker / D1 / Assets 配置
+Makefile         # build（Rust，默认）/ go-wasm（Go）/ dev / deploy / 数据库初始化
 archive/         # 旧版代码留档（文件存储版 / MySQL+Docker 版）
 ```

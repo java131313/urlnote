@@ -1,5 +1,0 @@
-# local runtime data
-data/
-
-# locally built server binary (the image builds its own)
-/urlnote-server

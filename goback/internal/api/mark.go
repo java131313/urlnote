@@ -1,11 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"urlnote/goback/internal/store"
 	"urlnote/goback/shared"
@@ -18,34 +16,29 @@ import (
 // endpoint) keeps the two consistent: notes edited after marking get their
 // mark regenerated, and marks whose note was deleted are removed.
 
-// generateMark regenerates the marked copy of note id. No-op if the note is
+// generateMarkRow regenerates the marked copy of note id. No-op if the note is
 // gone; returns false in that case.
-func (s *Server) generateMarkRow(id string) bool {
-	var note store.Note
-	if err := s.DB.Select("id", "content", "updated_at").Where("id = ?", id).First(&note).Error; err != nil {
+func (s *Server) generateMarkRow(ctx context.Context, id string) bool {
+	note, found, err := s.DB.NoteForMark(ctx, id)
+	if err != nil || !found {
 		return false
 	}
 	marked := s.Ana.AnnotateMarkdown(note.Content)
-	err := s.DB.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "id"}},
-		DoUpdates: clause.Set([]clause.Assignment{
-			{Column: clause.Column{Name: "content"}, Value: marked},
-			{Column: clause.Column{Name: "source_updated_at"}, Value: note.UpdatedAt},
-			{Column: clause.Column{Name: "updated_at"}, Value: nowStr()},
-		}),
-	}).Create(&store.NoteMark{ID: id, Content: marked, SourceUpdatedAt: note.UpdatedAt, UpdatedAt: nowStr()}).Error
+	err = s.DB.UpsertMark(ctx, store.NoteMark{
+		ID: id, Content: marked, SourceUpdatedAt: note.UpdatedAt, UpdatedAt: nowStr(),
+	})
 	return err == nil
 }
 
 // regenerateMarkAuto refreshes the marked copy from the note's current
 // content, but never clobbers a mark the user edited by hand
-// (source_updated_at = ''). Used by save and reindex.
-func (s *Server) regenerateMarkAuto(id string) {
-	var mark store.NoteMark
-	if err := s.DB.Select("source_updated_at").Where("id = ?", id).First(&mark).Error; err == nil && mark.SourceUpdatedAt == "" {
+// (an empty source_updated_at). Used by save and reindex.
+func (s *Server) regenerateMarkAuto(ctx context.Context, id string) {
+	mark, found, err := s.DB.GetMark(ctx, id)
+	if err == nil && found && mark.SourceUpdatedAt == "" {
 		return
 	}
-	s.generateMarkRow(id)
+	s.generateMarkRow(ctx, id)
 }
 
 // sweepMarks runs the consistency sweep:
@@ -53,18 +46,12 @@ func (s *Server) regenerateMarkAuto(id string) {
 //   - stale marks (note edited after the mark was taken) are regenerated.
 //
 // Returns (orphansRemoved, marksRegenerated, scanned).
-func (s *Server) sweepMarks(limit int) (int64, int64, int64) {
+func (s *Server) sweepMarks(ctx context.Context, limit int) (int64, int64, int64) {
 	// orphans: mark rows with no matching note
-	var orphans []string
-	s.DB.Table("notes_mark").
-		Select("notes_mark.id").
-		Joins("LEFT JOIN notes ON notes.id = notes_mark.id").
-		Where("notes.id IS NULL").
-		Limit(limit).
-		Pluck("notes_mark.id", &orphans)
+	orphans, _ := s.DB.OrphanMarkIDs(ctx, limit)
 	var removed int64
 	for _, id := range orphans {
-		if err := s.DB.Where("id = ?", id).Delete(&store.NoteMark{}).Error; err == nil {
+		if err := s.DB.DeleteMark(ctx, id); err == nil {
 			removed++
 		}
 	}
@@ -74,17 +61,10 @@ func (s *Server) sweepMarks(limit int) (int64, int64, int64) {
 	if remaining < 0 {
 		remaining = 0
 	}
-	var stale []string
-	s.DB.Table("notes_mark").
-		Select("notes_mark.id").
-		Joins("JOIN notes ON notes.id = notes_mark.id").
-		Where("notes_mark.source_updated_at <> '' AND notes_mark.source_updated_at <> notes.updated_at").
-		Order("notes_mark.updated_at").
-		Limit(remaining).
-		Pluck("notes_mark.id", &stale)
+	stale, _ := s.DB.StaleMarkIDs(ctx, remaining)
 	var regenerated int64
 	for _, id := range stale {
-		if s.generateMarkRow(id) {
+		if s.generateMarkRow(ctx, id) {
 			regenerated++
 		}
 	}
@@ -99,21 +79,28 @@ func (s *Server) generateMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if !s.canEditNow(user) {
+	if !s.canEditNow(r.Context(), user) {
 		jsonError(w, http.StatusForbidden, "edit locked")
 		return
 	}
-	if s.generateMarkRow(id) {
+	if s.generateMarkRow(r.Context(), id) {
 		writeJSON(w, http.StatusOK, shared.OkResponse{OK: true})
-	} else if err := s.DB.Select("id").Where("id = ?", id).First(&store.Note{}).Error; err == gorm.ErrRecordNotFound {
-		jsonError(w, http.StatusNotFound, "note not found")
-	} else {
-		jsonError(w, http.StatusInternalServerError, "mark failed")
+		return
 	}
+	exists, err := s.DB.NoteExists(r.Context(), id)
+	if err != nil {
+		jsonError(w, http.StatusInternalServerError, "mark failed")
+		return
+	}
+	if !exists {
+		jsonError(w, http.StatusNotFound, "note not found")
+		return
+	}
+	jsonError(w, http.StatusInternalServerError, "mark failed")
 }
 
 func (s *Server) saveMark(w http.ResponseWriter, r *http.Request) {
@@ -122,11 +109,11 @@ func (s *Server) saveMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if !s.canEditNow(user) {
+	if !s.canEditNow(r.Context(), user) {
 		jsonError(w, http.StatusForbidden, "edit locked")
 		return
 	}
@@ -138,18 +125,12 @@ func (s *Server) saveMark(w http.ResponseWriter, r *http.Request) {
 	// The content is re-annotated (POS HTML spans) before storing, so
 	// notes_mark always holds the annotated document; source_updated_at is
 	// blanked so the consistency sweep leaves hand-edited marks alone.
-	res := s.DB.Model(&store.NoteMark{}).
-		Where("id = ?", id).
-		Updates(map[string]any{
-			"content":            s.Ana.AnnotateMarkdown(body.Content),
-			"source_updated_at": "",
-			"updated_at":          nowStr(),
-		})
-	if res.Error != nil {
+	rows, err := s.DB.UpdateMarkContent(r.Context(), id, s.Ana.AnnotateMarkdown(body.Content), nowStr())
+	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "save failed")
 		return
 	}
-	if res.RowsAffected == 0 {
+	if rows == 0 {
 		jsonError(w, http.StatusNotFound, "no mark")
 		return
 	}
@@ -162,15 +143,15 @@ func (s *Server) removeMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	if !s.canEditNow(user) {
+	if !s.canEditNow(r.Context(), user) {
 		jsonError(w, http.StatusForbidden, "edit locked")
 		return
 	}
-	s.DB.Where("id = ?", id).Delete(&store.NoteMark{})
+	_ = s.DB.DeleteMark(r.Context(), id)
 	writeJSON(w, http.StatusOK, shared.OkResponse{OK: true})
 }
 
@@ -179,12 +160,12 @@ func (s *Server) getMark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	var mark store.NoteMark
-	if err := s.DB.Select("content", "source_updated_at").Where("id = ?", id).First(&mark).Error; err != nil {
+	mark, found, err := s.DB.GetMark(r.Context(), id)
+	if err != nil || !found {
 		jsonError(w, http.StatusNotFound, "no mark")
 		return
 	}
@@ -194,10 +175,10 @@ func (s *Server) getMark(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// SweepForLog runs the periodic consistency sweep; it exists so the main
-// package can drive the background ticker without knowing the internals.
-func (s *Server) SweepForLog() (removed, regenerated, scanned int64) {
-	return s.sweepMarks(3)
+// SweepForLog runs the periodic consistency sweep; it exists so the worker
+// entry (cron trigger) can drive it without knowing the internals.
+func (s *Server) SweepForLog(ctx context.Context) (removed, regenerated, scanned int64) {
+	return s.sweepMarks(ctx, 3)
 }
 
 // checkMarks is the manual admin sweep endpoint.
@@ -210,10 +191,10 @@ func (s *Server) checkMarks(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	removed, regenerated, scanned := s.sweepMarks(5)
+	removed, regenerated, scanned := s.sweepMarks(r.Context(), 5)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"scanned":          scanned,
-		"orphans_removed":  removed,
-		"regenerated":      regenerated,
+		"scanned":         scanned,
+		"orphans_removed": removed,
+		"regenerated":     regenerated,
 	})
 }

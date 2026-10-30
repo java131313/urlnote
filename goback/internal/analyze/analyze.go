@@ -349,7 +349,7 @@ func checkJaStyle(a *token.Analyzer, issues *[]shared.Issue, text string) {
 	}
 	if polite >= 2 && plain >= 1 {
 		*issues = append(*issues, shared.Issue{
-			Problem: fmt.Sprintf("です・ます调(%d 处)与だ・である调(%d 处)混用,建议统一文体", polite, plain),
+			Problem:    fmt.Sprintf("です・ます调(%d 处)与だ・である调(%d 处)混用,建议统一文体", polite, plain),
 			Suggestion: "统一为です・ます调或だ・である调",
 			Lang:       "ja",
 		})

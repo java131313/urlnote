@@ -10,13 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"urlnote/goback/internal/store"
 	"urlnote/goback/shared"
 )
 
 // Password hashes are SHA-256 of "username:password" (hex), seeded by
 // migrations/0003-users.sql — there is deliberately no registration.
-// Sessions live in the PostgreSQL sessions table (migrated from D1).
+// Sessions live in the D1 sessions table (migrated from KV).
 
 func passwordHash(username, password string) string {
 	sum := sha256.Sum256([]byte(username + ":" + password))
@@ -36,21 +35,21 @@ func newToken() string {
 }
 
 func isHTTPS(r *http.Request) bool {
-	return r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+	return r.TLS != nil ||
+		r.Header.Get("X-Forwarded-Proto") == "https" ||
+		strings.Contains(r.Header.Get("CF-Visitor"), `"https"`)
 }
 
 func (s *Server) currentUser(r *http.Request) (string, bool) {
 	c, err := r.Cookie("session")
-	if err != nil || !tokenRe.MatchString(c.Value) {
+	if err != nil || !validToken(c.Value) {
 		return "", false
 	}
-	var sess store.Session
-	if err := s.DB.Select("username").
-		Where("token = ? AND expires_at > ?", c.Value, nowStr()).
-		First(&sess).Error; err != nil {
+	username, ok, err := s.DB.GetSessionUsername(r.Context(), c.Value, nowStr())
+	if err != nil || !ok {
 		return "", false
 	}
-	return sess.Username, true
+	return username, true
 }
 
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
@@ -61,19 +60,18 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimSpace(body.Username)
 
-	var user store.User
-	err := s.DB.Select("password_hash").Where("username = ?", username).First(&user).Error
-	if err != nil || !hmac.Equal([]byte(passwordHash(username, body.Password)), []byte(user.PasswordHash)) {
+	hash, found, err := s.DB.GetPasswordHash(r.Context(), username)
+	if err != nil || !found || !hmac.Equal([]byte(passwordHash(username, body.Password)), []byte(hash)) {
 		jsonError(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
 
 	// Expired rows are purged opportunistically on each login.
-	s.DB.Where("expires_at <= ?", nowStr()).Delete(&store.Session{})
+	_ = s.DB.DeleteExpiredSessions(r.Context(), nowStr())
 
 	token := newToken()
 	expires := time.Now().UTC().Add(sessionTTLSec * time.Second).Format("2006-01-02 15:04:05")
-	if err := s.DB.Create(&store.Session{Token: token, Username: username, ExpiresAt: expires}).Error; err != nil {
+	if err := s.DB.CreateSession(r.Context(), token, username, expires); err != nil {
 		jsonError(w, http.StatusInternalServerError, "session failed")
 		return
 	}
@@ -100,8 +98,8 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie("session"); err == nil && tokenRe.MatchString(c.Value) {
-		s.DB.Where("token = ?", c.Value).Delete(&store.Session{})
+	if c, err := r.Cookie("session"); err == nil && validToken(c.Value) {
+		_ = s.DB.DeleteSession(r.Context(), c.Value)
 	}
 	http.SetCookie(w, &http.Cookie{Name: "session", Value: "", Path: "/", MaxAge: -1})
 	writeJSON(w, http.StatusOK, shared.OkResponse{OK: true})

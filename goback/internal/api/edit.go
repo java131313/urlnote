@@ -1,46 +1,44 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 
-	"gorm.io/gorm/clause"
-
-	"urlnote/goback/internal/store"
 	"urlnote/goback/shared"
 )
 
 // ---- edit lock ----
 //
-// The lock lives in PostgreSQL: edit_lock is a single-row flag,
-// edit_requests holds one row per user (pending until approved; reject/
-// revoke delete the row so the user can apply again). Admin (the seeded
-// "admin" account) is always allowed to edit and is the only one who can
-// flip the lock or handle requests. All lock-state reads fail open
-// (unlocked): a database hiccup must not brick editing for everyone — the
-// write path still fails loudly if the database is actually down.
+// The lock lives in D1: edit_lock is a single-row flag, edit_requests holds
+// one row per user (pending until approved; reject/revoke delete the row so
+// the user can apply again). Admin (the seeded "admin" account) is always
+// allowed to edit and is the only one who can flip the lock or handle
+// requests. All lock-state reads fail open (unlocked): a database hiccup must
+// not brick editing for everyone — the write path still fails loudly if the
+// database is actually down.
 
 func isAdmin(user string) bool { return user == shared.AdminUsername }
 
-func (s *Server) editLocked() bool {
-	var lock store.EditLock
-	if err := s.DB.Select("locked").Where("id = 1").First(&lock).Error; err != nil {
+func (s *Server) editLocked(ctx context.Context) bool {
+	locked, err := s.DB.EditLocked(ctx)
+	if err != nil {
 		return false
 	}
-	return lock.Locked != 0
+	return locked
 }
 
-func (s *Server) myRequestStatus(user string) string {
-	var req store.EditRequest
-	if err := s.DB.Select("status").Where("username = ?", user).First(&req).Error; err != nil {
+func (s *Server) myRequestStatus(ctx context.Context, user string) string {
+	status, _, err := s.DB.GetEditRequestStatus(ctx, user)
+	if err != nil {
 		return "none"
 	}
-	return req.Status
+	return status
 }
 
-func (s *Server) canEditNow(user string) bool {
-	return isAdmin(user) || !s.editLocked() || s.myRequestStatus(user) == "approved"
+func (s *Server) canEditNow(ctx context.Context, user string) bool {
+	return isAdmin(user) || !s.editLocked(ctx) || s.myRequestStatus(ctx, user) == "approved"
 }
 
 func (s *Server) editStatus(w http.ResponseWriter, r *http.Request) {
@@ -48,10 +46,10 @@ func (s *Server) editStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	locked := s.editLocked()
+	locked := s.editLocked(r.Context())
 	request := "none"
 	if !isAdmin(user) {
-		request = s.myRequestStatus(user)
+		request = s.myRequestStatus(r.Context(), user)
 	}
 	writeJSON(w, http.StatusOK, shared.EditStatusResponse{
 		Locked:  locked,
@@ -75,15 +73,7 @@ func (s *Server) setEditLock(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return
 	}
-	locked := 0
-	if body.Locked {
-		locked = 1
-	}
-	err := s.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"locked", "updated_at"}),
-	}).Create(&store.EditLock{ID: 1, Locked: locked, UpdatedAt: nowStr()}).Error
-	if err != nil {
+	if err := s.DB.SetEditLock(r.Context(), body.Locked, nowStr()); err != nil {
 		jsonError(w, http.StatusInternalServerError, "lock failed")
 		return
 	}
@@ -101,7 +91,7 @@ func (s *Server) submitEditRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Admin never needs approval; an existing approval is left untouched.
-	if isAdmin(user) || s.myRequestStatus(user) == "approved" {
+	if isAdmin(user) || s.myRequestStatus(r.Context(), user) == "approved" {
 		writeJSON(w, http.StatusOK, shared.OkResponse{OK: true})
 		return
 	}
@@ -109,16 +99,8 @@ func (s *Server) submitEditRequest(w http.ResponseWriter, r *http.Request) {
 	if len(msg) > 200 {
 		msg = msg[:200]
 	}
-	// INSERT OR REPLACE equivalent: upsert the pending row.
-	err := s.DB.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "username"}},
-		DoUpdates: clause.Set([]clause.Assignment{
-			{Column: clause.Column{Name: "status"}, Value: "pending"},
-			{Column: clause.Column{Name: "message"}, Value: string(msg)},
-			{Column: clause.Column{Name: "created_at"}, Value: nowStr()},
-		}),
-	}).Create(&store.EditRequest{Username: user, Status: "pending", Message: string(msg), CreatedAt: nowStr()}).Error
-	if err != nil {
+	// INSERT ... ON CONFLICT(username) DO UPDATE: upsert the pending row.
+	if err := s.DB.SubmitEditRequest(r.Context(), user, string(msg), nowStr()); err != nil {
 		jsonError(w, http.StatusInternalServerError, "request failed")
 		return
 	}
@@ -134,8 +116,8 @@ func (s *Server) listEditRequests(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusForbidden, "forbidden")
 		return
 	}
-	var rows []store.EditRequest
-	if err := s.DB.Order("created_at DESC").Find(&rows).Error; err != nil {
+	rows, err := s.DB.ListEditRequests(r.Context())
+	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "list failed")
 		return
 	}
@@ -172,14 +154,9 @@ func (s *Server) handleEditRequest(w http.ResponseWriter, r *http.Request) {
 	switch body.Action {
 	case "approve":
 		// Upsert: approving a pending row keeps its message; re-approving is idempotent.
-		err = s.DB.Clauses(clause.OnConflict{
-			Columns: []clause.Column{{Name: "username"}},
-			DoUpdates: clause.Set([]clause.Assignment{
-				{Column: clause.Column{Name: "status"}, Value: "approved"},
-			}),
-		}).Create(&store.EditRequest{Username: target, Status: "approved", Message: "", CreatedAt: nowStr()}).Error
+		err = s.DB.ApproveEditRequest(r.Context(), target, nowStr())
 	case "reject", "revoke":
-		err = s.DB.Where("username = ?", target).Delete(&store.EditRequest{}).Error
+		err = s.DB.DeleteEditRequest(r.Context(), target)
 	default:
 		jsonError(w, http.StatusBadRequest, "bad request")
 		return

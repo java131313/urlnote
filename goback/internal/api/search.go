@@ -6,18 +6,17 @@ import (
 	"strconv"
 	"strings"
 
-	"urlnote/goback/internal/store"
 	"urlnote/goback/internal/token"
 	"urlnote/goback/shared"
 )
 
 // ---- full-text search ----
 //
-// Tokens are produced by jieba (Chinese) + kagome/IPADIC (Japanese) at save
-// time and stored space-joined in the notes_fts table. Queries go through
-// the same pipeline and the terms are ANDed — word-level semantics ("中国"
-// doesn't match "中间"), ranked by ts_rank. tokens are restricted to word
-// chars by pushToken, so no tsquery escaping is needed.
+// Tokens are produced by the segmenters at save time and stored space-joined
+// in the D1 FTS5 table (tokenize='ascii'). Queries go through the same
+// pipeline and the terms are ANDed — word-level semantics ("中国" doesn't
+// match "中间"), ranked by bm25. Tokens are restricted to word chars by
+// pushToken, so no FTS5 escaping is needed.
 
 func (s *Server) searchNotes(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireUser(w, r); !ok {
@@ -35,23 +34,9 @@ func (s *Server) searchNotes(w http.ResponseWriter, r *http.Request) {
 		s.writeRawJSON(w, http.StatusOK, empty, "")
 		return
 	}
-	matchExpr := strings.Join(terms, " & ")
+	matchExpr := strings.Join(terms, " AND ")
 
-	var rows []struct {
-		ID        string
-		Title     string
-		Tags      string
-		UpdatedAt string
-		Excerpt   string
-		Author    string
-	}
-	err := s.DB.Raw(`
-		SELECT notes.id, notes.title, notes.tags, notes.updated_at,
-		       left(notes.content, 120) AS excerpt, notes.author
-		FROM notes_fts JOIN notes ON notes.id = notes_fts.note_id
-		WHERE to_tsvector('simple', notes_fts.tokens) @@ to_tsquery('simple', ?)
-		ORDER BY ts_rank(to_tsvector('simple', notes_fts.tokens), to_tsquery('simple', ?)) DESC
-		LIMIT 50`, matchExpr, matchExpr).Scan(&rows).Error
+	rows, err := s.DB.SearchNotes(r.Context(), matchExpr)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "search failed")
 		return
@@ -68,14 +53,14 @@ func (s *Server) searchNotes(w http.ResponseWriter, r *http.Request) {
 }
 
 // reindexSearch rebuilds the FTS index for notes that predate the search
-// feature (or drifted). Processing is chunked (REINDEX_CHUNK notes per call)
+// feature (or drifted). Processing is chunked (reindexChunk notes per call)
 // to mirror the Rust worker's contract: the caller loops with next_offset
 // until it comes back null.
 const reindexChunk = 10
 
 type reindexResponse struct {
-	Indexed    int   `json:"indexed"`
-	NextOffset *int  `json:"next_offset"`
+	Indexed    int  `json:"indexed"`
+	NextOffset *int `json:"next_offset"`
 }
 
 func (s *Server) reindexSearch(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +76,8 @@ func (s *Server) reindexSearch(w http.ResponseWriter, r *http.Request) {
 
 	count := 0
 	for i := 0; i < reindexChunk; i++ {
-		var row store.Note
-		if err := s.DB.Order("id").Offset(offset + i).Limit(1).First(&row).Error; err != nil {
+		row, found, err := s.DB.NoteAt(r.Context(), offset+i)
+		if err != nil || !found {
 			break
 		}
 		head := []rune(row.Title + " " + strings.Join(parseTags(row.Tags), " ") + " " + row.Content)
@@ -100,11 +85,10 @@ func (s *Server) reindexSearch(w http.ResponseWriter, r *http.Request) {
 			head = head[:token.IndexMaxChars]
 		}
 		toks := s.Ana.Tokenize(string(head))
-		s.DB.Where("note_id = ?", row.ID).Delete(&store.NoteFts{})
-		if err := s.DB.Create(&store.NoteFts{NoteID: row.ID, Tokens: strings.Join(toks, " ")}).Error; err != nil {
-			// logged; continue with the next note
-		}
-		s.regenerateMarkAuto(row.ID)
+		// Index failures are logged upstream in the Rust worker; keep
+		// processing the remaining notes here.
+		_ = s.DB.ReplaceFts(r.Context(), row.ID, strings.Join(toks, " "))
+		s.regenerateMarkAuto(r.Context(), row.ID)
 		count++
 	}
 

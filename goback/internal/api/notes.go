@@ -1,12 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
-
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"urlnote/goback/internal/store"
 	"urlnote/goback/internal/token"
@@ -57,7 +55,7 @@ func parseTags(s string) []string {
 
 func (s *Server) getNote(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		http.NotFound(w, r)
 		return
 	}
@@ -65,21 +63,19 @@ func (s *Server) getNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// cache hit: serve the in-memory copy directly
+	// cache hit: serve the cached copy directly
 	if payload, ok := s.Cache.Get(noteKey(id)); ok {
 		s.writeRawJSON(w, http.StatusOK, payload, "HIT")
 		return
 	}
 
-	var row store.Note
-	err := s.DB.Where("id = ?", id).First(&row).Error
-	var note shared.Note
-	if err == gorm.ErrRecordNotFound {
-		note = shared.EmptyNote(id)
-	} else if err != nil {
+	row, found, err := s.DB.GetNote(r.Context(), id)
+	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "read failed")
 		return
-	} else {
+	}
+	note := shared.EmptyNote(id)
+	if found {
 		note = shared.Note{
 			ID:        id,
 			Content:   row.Content,
@@ -98,7 +94,7 @@ func (s *Server) getNote(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if !idRe.MatchString(id) {
+	if !validID(id) {
 		http.NotFound(w, r)
 		return
 	}
@@ -106,7 +102,7 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.canEditNow(user) {
+	if !s.canEditNow(r.Context(), user) {
 		jsonError(w, http.StatusForbidden, "edit locked")
 		return
 	}
@@ -123,7 +119,7 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 		fontSize = shared.ResolveFontSize(*body.FontSize)
 	}
 	color := body.Color
-	if !colorRe.MatchString(color) {
+	if !validColor(color) {
 		color = ""
 	}
 	title := cleanTitle(body.Title)
@@ -134,19 +130,15 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 	note := store.Note{
 		ID:        id,
 		Content:   body.Content,
-		FontSize:  fontSize,
-		Color:     color,
 		Title:     title,
 		Tags:      string(tagsJSON),
 		Author:    user,
+		FontSize:  fontSize,
+		Color:     color,
 		UpdatedAt: updatedAt,
 	}
 	// INSERT ... ON CONFLICT(id) DO UPDATE — the D1 upsert, verbatim.
-	err := s.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"content", "font_size", "color", "title", "tags", "author", "updated_at"}),
-	}).Create(&note).Error
-	if err != nil {
+	if err := s.DB.SaveNote(r.Context(), note); err != nil {
 		jsonError(w, http.StatusInternalServerError, "save failed")
 		return
 	}
@@ -167,33 +159,20 @@ func (s *Server) saveNote(w http.ResponseWriter, r *http.Request) {
 		head = head[:token.IndexMaxChars]
 	}
 	toks := s.Ana.Tokenize(string(head))
-	if err := s.DB.Where("note_id = ?", id).Delete(&store.NoteFts{}).Error; err == nil {
-		if err := s.DB.Create(&store.NoteFts{NoteID: id, Tokens: strings.Join(toks, " ")}).Error; err != nil {
-			// logged by GORM; the save itself succeeded
-		}
-	}
+	// Index failures must not fail the save (the row write already succeeded).
+	_ = s.DB.ReplaceFts(r.Context(), id, strings.Join(toks, " "))
 
 	// eager marked copy for the POS overlay; a hand-edited mark
 	// (source_updated_at = '') is never clobbered
-	s.regenerateMarkAuto(id)
+	s.regenerateMarkAuto(r.Context(), id)
 
-	s.rebuildIndex()
+	s.rebuildIndex(r.Context())
 	s.writeRawJSON(w, http.StatusOK, payload, "")
 }
 
 // queryNoteMeta loads metadata of all notes, newest first.
-func (s *Server) queryNoteMeta() ([]shared.NoteMeta, error) {
-	var rows []struct {
-		ID        string
-		Title     string
-		Tags      string
-		UpdatedAt string
-		Excerpt   string
-		Author    string
-	}
-	err := s.DB.Model(&store.Note{}).
-		Select("id, title, tags, updated_at, left(content, 120) AS excerpt, author").
-		Order("updated_at DESC").Scan(&rows).Error
+func (s *Server) queryNoteMeta(ctx context.Context) ([]shared.NoteMeta, error) {
+	rows, err := s.DB.ListNoteMeta(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -208,8 +187,8 @@ func (s *Server) queryNoteMeta() ([]shared.NoteMeta, error) {
 }
 
 // rebuildIndex refreshes the cached note list after a write.
-func (s *Server) rebuildIndex() {
-	metas, err := s.queryNoteMeta()
+func (s *Server) rebuildIndex(ctx context.Context) {
+	metas, err := s.queryNoteMeta(ctx)
 	if err != nil {
 		s.Cache.Delete(indexKey)
 		return
@@ -226,7 +205,7 @@ func (s *Server) listNotes(w http.ResponseWriter, r *http.Request) {
 		s.writeRawJSON(w, http.StatusOK, payload, "HIT")
 		return
 	}
-	metas, err := s.queryNoteMeta()
+	metas, err := s.queryNoteMeta(r.Context())
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, "list failed")
 		return

@@ -1,18 +1,15 @@
 // Package api implements the urlnote HTTP API: a Go port of the Rust
-// worker's lib.rs backed by GORM/PostgreSQL. The JSON contract, status codes
-// and cache behavior mirror the Rust worker (and the original Go backend
-// before it), so existing clients work unchanged.
+// worker's lib.rs backed by Cloudflare D1 (SQLite). The JSON contract, status
+// codes and cache behavior mirror the Rust worker (and the original Go
+// backend before it), so existing clients work unchanged.
 package api
 
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"time"
 
-	"gorm.io/gorm"
-
-	"urlnote/goback/internal/cache"
+	"urlnote/goback/internal/store"
 	"urlnote/goback/internal/token"
 	"urlnote/goback/shared"
 )
@@ -30,21 +27,80 @@ const (
 	presenceTTLSec = 90
 )
 
-var (
-	idRe        = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
-	colorRe     = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
-	tokenRe     = regexp.MustCompile(`^[a-zA-Z0-9]{32}$`)
-	imageNameRe = regexp.MustCompile(`^[a-zA-Z0-9]{16}\.[a-z0-9]+$`)
-)
+// The input validators are hand-written instead of regexp-based: pulling in
+// the regexp engine costs ~140 KiB of the WASM bundle for four trivial
+// patterns. Patterns handled here (identical to the Rust/Go originals):
+//
+//	id      ^[a-zA-Z0-9_-]{1,64}$
+//	color   ^#[0-9a-fA-F]{6}$
+//	token   ^[a-zA-Z0-9]{32}$
+//	image   ^[a-zA-Z0-9]{16}\.[a-z0-9]+$
+
+func isAlnumByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+}
+
+// isHexByte reports whether c is [0-9a-fA-F].
+func isHexByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+}
+
+// runOf reports whether s consists solely of bytes accepted by ok and has
+// between min and max bytes (max < 0 means unbounded).
+func runOf(s string, ok func(byte) bool, min, max int) bool {
+	if len(s) < min || (max >= 0 && len(s) > max) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !ok(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func validID(s string) bool {
+	return runOf(s, func(c byte) bool { return isAlnumByte(c) || c == '_' || c == '-' }, 1, 64)
+}
+
+func validColor(s string) bool {
+	return len(s) == 7 && s[0] == '#' && runOf(s[1:], isHexByte, 6, 6)
+}
+
+func validToken(s string) bool { return runOf(s, isAlnumByte, 32, 32) }
+
+func validImageName(s string) bool {
+	if len(s) < 16+1+1 || !runOf(s[:16], isAlnumByte, 16, 16) || s[16] != '.' {
+		return false
+	}
+	return runOf(s[17:], func(c byte) bool { return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' }, 1, -1)
+}
+
+// ResponseCache abstracts the note/index response cache. The self-hosted
+// implementation was an in-memory TTL cache; the Worker uses Workers KV
+// (write-through) so keys are shared with the Rust worker.
+type ResponseCache interface {
+	Get(key string) ([]byte, bool)
+	Put(key string, payload []byte, ttl time.Duration)
+	Delete(key string)
+	NoteTTL() time.Duration
+	IndexTTL() time.Duration
+}
+
+// ImageStore stores uploaded images by "{stem}.{ext}" name.
+type ImageStore interface {
+	Put(name string, data []byte) error
+	Get(name string) ([]byte, bool, error)
+}
 
 // Server wires the database, segmenters, cache and static assets.
 type Server struct {
-	DB       *gorm.DB
-	Ana      *token.Analyzer
-	Cache    *cache.Cache
-	CORS     []string
-	ImageDir string
-	Static   http.Handler // serves the WASM SPA + assets (with index fallback)
+	DB     *store.Store
+	Ana    *token.Analyzer
+	Cache  ResponseCache
+	CORS   []string
+	Images ImageStore
+	Static http.Handler // serves the WASM SPA + assets (with index fallback)
 }
 
 func noteKey(id string) string { return noteKeyPrefix + id + ".json" }

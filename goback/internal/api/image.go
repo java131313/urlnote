@@ -5,19 +5,18 @@ import (
 	"crypto/rand"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"urlnote/goback/shared"
 )
 
-// ---- image upload & serving (images are stored on local disk) ----
+// ---- image upload & serving (images are stored in Workers KV in the
+// Worker deployment; the backing store is abstracted by ImageStore) ----
 
 const (
 	maxUploadBytes = 8 << 20
 	// headroom for multipart overhead beyond the raw file limit
 	uploadHeadroom = 1 << 20
-	imageKeyPrefix = "img/"
 )
 
 // sniffImage detects the real format by magic bytes — the client-supplied
@@ -60,18 +59,18 @@ var imageExtMime = map[string]string{
 }
 
 // upload accepts Vditor's multipart upload (field "file[]") and stores valid
-// images on disk under ImageDir. The response follows Vditor's protocol:
+// images through ImageStore. The response follows Vditor's protocol:
 // {msg, code, data: {errFiles, succMap}}.
 func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.requireUser(w, r)
 	if !ok {
 		return
 	}
-	if !s.canEditNow(user) {
+	if !s.canEditNow(r.Context(), user) {
 		jsonError(w, http.StatusForbidden, "edit locked")
 		return
 	}
-	if s.ImageDir == "" {
+	if s.Images == nil {
 		jsonError(w, http.StatusServiceUnavailable, "storage unavailable")
 		return
 	}
@@ -106,7 +105,7 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			name := newImageStem() + ext
-			if err := os.WriteFile(filepath.Join(s.ImageDir, name), b, 0o644); err != nil {
+			if err := s.Images.Put(name, b); err != nil {
 				errFiles = append(errFiles, fh.Filename)
 				continue
 			}
@@ -120,14 +119,14 @@ func (s *Server) upload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// image serves an uploaded image from disk with immutable caching — names
-// are random, so content never changes under the same URL.
+// image serves an uploaded image with immutable caching — names are random,
+// so content never changes under the same URL.
 func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireUser(w, r); !ok {
 		return
 	}
 	name := r.PathValue("name")
-	if !imageNameRe.MatchString(name) || s.ImageDir == "" {
+	if !validImageName(name) || s.Images == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -136,8 +135,8 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	b, err := os.ReadFile(filepath.Join(s.ImageDir, name))
-	if err != nil {
+	b, found, err := s.Images.Get(name)
+	if err != nil || !found {
 		http.NotFound(w, r)
 		return
 	}
@@ -152,5 +151,9 @@ func (s *Server) image(w http.ResponseWriter, r *http.Request) {
 // back to index.html for extensionless client routes, and 404s /api/* misses
 // and missing assets.
 func (s *Server) serveApp(w http.ResponseWriter, r *http.Request) {
+	if s.Static == nil {
+		http.NotFound(w, r)
+		return
+	}
 	s.Static.ServeHTTP(w, r)
 }
