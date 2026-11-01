@@ -157,6 +157,11 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Delete, ["api", "mark", id]) => remove_mark(req, &env, id).await,
         (Method::Get, ["api", "mark", id]) => get_mark(req, &env, id).await,
         (Method::Post, ["api", "search", "reindex"]) => reindex_search(&req, &env).await,
+        (Method::Get, ["api", "dict", "lookup"]) => dict_lookup(&req, &env).await,
+        (Method::Get, ["api", "dict"]) => list_dict(&req, &env).await,
+        (Method::Post, ["api", "dict"]) => create_dict(req, &env).await,
+        (Method::Put, ["api", "dict", id]) => update_dict(req, &env, id).await,
+        (Method::Delete, ["api", "dict", id]) => delete_dict(&req, &env, id).await,
         (Method::Post, ["api", "edit-lock"]) => set_edit_lock(req, &env).await,
         (Method::Post, ["api", "edit-request"]) => submit_edit_request(req, &env).await,
         (Method::Get, ["api", "edit-requests"]) => list_edit_requests(&req, &env).await,
@@ -1041,6 +1046,227 @@ async fn search_notes(req: &Request, env: &Env) -> Result<Response> {
     })
     .unwrap();
     json_response(200, payload, None)
+}
+
+// ---- four-language dictionary ----
+//
+// The `dict` table maps same-meaning words across zh-CN / zh-TW / ja / en
+// (one row per meaning). The editor queries /api/dict/lookup as the user
+// types and offers the row's other languages as insertable suggestions.
+
+const DICT_LOOKUP_MAX_CHARS: usize = 32;
+const DICT_LOOKUP_LIMIT: usize = 8;
+
+#[derive(Deserialize)]
+struct DictRow {
+    id: i64,
+    zh_cn: String,
+    zh_tw: String,
+    ja: String,
+    en: String,
+}
+
+impl From<DictRow> for DictEntry {
+    fn from(r: DictRow) -> Self {
+        DictEntry {
+            id: r.id,
+            zh_cn: r.zh_cn,
+            zh_tw: r.zh_tw,
+            ja: r.ja,
+            en: r.en,
+        }
+    }
+}
+
+/// Escape LIKE wildcards so the user's own `%`/`_` never broaden the match.
+fn like_pattern(q: &str) -> String {
+    let mut s = String::with_capacity(q.len() + 2);
+    for c in q.chars() {
+        if c == '%' || c == '_' || c == '\\' {
+            s.push('\\');
+        }
+        s.push(c);
+    }
+    s.push('%');
+    s
+}
+
+/// GET /api/dict/lookup?q=... — rows where any language column equals the
+/// query (exact matches first), then rows where one starts with it.
+async fn dict_lookup(req: &Request, env: &Env) -> Result<Response> {
+    require_user!(req, env);
+    let empty = || serde_json::to_vec(&DictLookupResponse { entries: vec![] }).unwrap();
+
+    let Some(q) = query_param(req, "q") else {
+        return json_response(200, empty(), None);
+    };
+    let q = q.trim();
+    if q.is_empty() || q.chars().count() > DICT_LOOKUP_MAX_CHARS {
+        return json_response(200, empty(), None);
+    }
+    let db = env.d1("DB")?;
+    let exact = db
+        .prepare(
+            "SELECT id, zh_cn, zh_tw, ja, en FROM dict
+             WHERE zh_cn = ?1 OR zh_tw = ?1 OR ja = ?1 OR en = ?1
+             ORDER BY id LIMIT ?2",
+        )
+        .bind(&[JsValue::from(q), JsValue::from(DICT_LOOKUP_LIMIT as i64)])?
+        .all()
+        .await?
+        .results::<DictRow>()?;
+    let mut entries: Vec<DictEntry> = exact.into_iter().map(DictEntry::from).collect();
+    if entries.len() < DICT_LOOKUP_LIMIT {
+        let rest = (DICT_LOOKUP_LIMIT - entries.len()) as i64;
+        let prefix = db
+            .prepare(
+                "SELECT id, zh_cn, zh_tw, ja, en FROM dict
+                 WHERE (zh_cn LIKE ?1 ESCAPE '\\' OR zh_tw LIKE ?1 ESCAPE '\\'
+                        OR ja LIKE ?1 ESCAPE '\\' OR en LIKE ?1 ESCAPE '\\')
+                   AND NOT (zh_cn = ?2 OR zh_tw = ?2 OR ja = ?2 OR en = ?2)
+                 ORDER BY id LIMIT ?3",
+            )
+            .bind(&[
+                JsValue::from(like_pattern(q)),
+                JsValue::from(q),
+                JsValue::from(rest),
+            ])?
+            .all()
+            .await?
+            .results::<DictRow>()?;
+        entries.extend(prefix.into_iter().map(DictEntry::from));
+    }
+    let payload = serde_json::to_vec(&DictLookupResponse { entries }).unwrap();
+    json_response(200, payload, None)
+}
+
+/// GET /api/dict?q=... — list rows (optional filter), admin only. Exists so
+/// the table can be inspected/managed without raw D1 access.
+async fn list_dict(req: &Request, env: &Env) -> Result<Response> {
+    let user = require_user!(req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let q = query_param(req, "q").unwrap_or_default();
+    let db = env.d1("DB")?;
+    let rows = if q.trim().is_empty() {
+        db.prepare("SELECT id, zh_cn, zh_tw, ja, en FROM dict ORDER BY id LIMIT 500")
+            .all()
+            .await?
+            .results::<DictRow>()?
+    } else {
+        let pattern = like_pattern(q.trim());
+        db.prepare(
+            "SELECT id, zh_cn, zh_tw, ja, en FROM dict
+             WHERE zh_cn LIKE ?1 ESCAPE '\\' OR zh_tw LIKE ?1 ESCAPE '\\'
+                OR ja LIKE ?1 ESCAPE '\\' OR en LIKE ?1 ESCAPE '\\'
+             ORDER BY id LIMIT 500",
+        )
+        .bind(&[JsValue::from(pattern)])?
+        .all()
+        .await?
+        .results::<DictRow>()?
+    };
+    let payload = serde_json::to_vec(&DictLookupResponse {
+        entries: rows.into_iter().map(DictEntry::from).collect(),
+    })
+    .unwrap();
+    json_response(200, payload, None)
+}
+
+/// POST /api/dict — add a row, admin only.
+async fn create_dict(mut req: Request, env: &Env) -> Result<Response> {
+    let user = require_user!(&req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let body: DictUpsertRequest = match req.json().await {
+        Ok(b) => b,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    let Some((zh_cn, zh_tw, ja, en)) = body.cleaned() else {
+        return json_error(400, "bad request");
+    };
+    let result = env
+        .d1("DB")?
+        .prepare(
+            "INSERT INTO dict (zh_cn, zh_tw, ja, en) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(&[
+            JsValue::from(zh_cn),
+            JsValue::from(zh_tw),
+            JsValue::from(ja),
+            JsValue::from(en),
+        ])?
+        .run()
+        .await?;
+    let id = result.meta().ok().flatten().and_then(|m| m.last_row_id);
+    // echo the created row when its id is known, a bare ok otherwise
+    let payload = match id {
+        Some(id) => {
+            let row = env
+                .d1("DB")?
+                .prepare("SELECT id, zh_cn, zh_tw, ja, en FROM dict WHERE id = ?1 LIMIT 1")
+                .bind(&[JsValue::from(id)])?
+                .first::<DictRow>(None)
+                .await?;
+            match row {
+                Some(r) => serde_json::to_vec(&DictEntry::from(r)).unwrap(),
+                None => serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
+            }
+        }
+        None => serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
+    };
+    json_response(200, payload, None)
+}
+
+/// PUT /api/dict/{id} — update a row, admin only.
+async fn update_dict(mut req: Request, env: &Env, id: &str) -> Result<Response> {
+    let user = require_user!(&req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let Ok(id) = id.parse::<i64>() else {
+        return json_error(400, "bad request");
+    };
+    let body: DictUpsertRequest = match req.json().await {
+        Ok(b) => b,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    let Some((zh_cn, zh_tw, ja, en)) = body.cleaned() else {
+        return json_error(400, "bad request");
+    };
+    env.d1("DB")?
+        .prepare(
+            "UPDATE dict SET zh_cn = ?1, zh_tw = ?2, ja = ?3, en = ?4 WHERE id = ?5",
+        )
+        .bind(&[
+            JsValue::from(zh_cn),
+            JsValue::from(zh_tw),
+            JsValue::from(ja),
+            JsValue::from(en),
+            JsValue::from(id),
+        ])?
+        .run()
+        .await?;
+    json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
+}
+
+/// DELETE /api/dict/{id} — remove a row, admin only.
+async fn delete_dict(req: &Request, env: &Env, id: &str) -> Result<Response> {
+    let user = require_user!(req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let Ok(id) = id.parse::<i64>() else {
+        return json_error(400, "bad request");
+    };
+    env.d1("DB")?
+        .prepare("DELETE FROM dict WHERE id = ?1")
+        .bind(&[JsValue::from(id)])?
+        .run()
+        .await?;
+    json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
 }
 
 async fn analyze_text(mut req: Request, env: &Env) -> Result<Response> {

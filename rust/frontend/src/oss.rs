@@ -10,8 +10,10 @@
 //! Fine for personal use; if that ever matters, move signing behind the
 //! CF worker (this module keeps it in one place on purpose).
 
+use crate::suggest::{Suggest, SuggestPanel};
 use crate::vditor::VditorEditor;
-use crate::{current_time, window, BASE_PATH};
+use crate::{current_time, document, window, BASE_PATH};
+use gloo_events::EventListener;
 use hmac::{Hmac, Mac};
 use leptos::html::Div;
 use leptos::prelude::*;
@@ -510,7 +512,11 @@ thread_local! {
     static OSS_EDITOR: RefCell<Option<OssEditor>> = const { RefCell::new(None) };
 }
 
-fn init_editor(mount: &web_sys::Element, on_input: Closure<dyn FnMut()>) -> Result<(), String> {
+fn init_editor(
+    mount: &web_sys::Element,
+    on_input: Closure<dyn FnMut()>,
+    sug: Suggest,
+) -> Result<(), String> {
     let dark = window()
         .match_media("(prefers-color-scheme: dark)")
         .ok()
@@ -542,6 +548,14 @@ fn init_editor(mount: &web_sys::Element, on_input: Closure<dyn FnMut()>) -> Resu
     js_sys::Reflect::set(&cache, &"enable".into(), &false.into()).unwrap();
     set("cache", &cache.into());
     set("input", on_input.as_ref().unchecked_ref());
+    // close the suggestion panel on blur; defer so a click on a suggestion
+    // row still lands first (same pattern as the note editor)
+    let blur_sug = sug;
+    let blur_cb = Closure::<dyn FnMut()>::new(move || {
+        let sug = blur_sug;
+        let _ = gloo_timers::callback::Timeout::new(150, move || sug.close());
+    });
+    set("blur", blur_cb.as_ref().unchecked_ref());
     // no upload integration on this page (view/edit only): no upload button
     let toolbar = js_sys::Array::new();
     for t in [
@@ -575,10 +589,11 @@ fn init_editor(mount: &web_sys::Element, on_input: Closure<dyn FnMut()>) -> Resu
     // function, which would silently kill the input callback (and with it
     // dirty tracking, leaving the save button permanently disabled)
     let cb = on_input.into_js_value();
+    let blur = blur_cb.into_js_value();
     OSS_EDITOR.with(|c| {
         *c.borrow_mut() = Some(OssEditor {
             editor,
-            cbs: vec![cb],
+            cbs: vec![cb, blur],
         });
     });
     Ok(())
@@ -611,10 +626,29 @@ struct OssCtx {
     dirty: RwSignal<bool>,
     suppress: RwSignal<f64>,
     status: RwSignal<String>,
+    suggest: Suggest,
 }
 
 thread_local! {
     static CTX: RefCell<Option<OssCtx>> = const { RefCell::new(None) };
+    // document-level listeners (suggestion panel) kept alive for the page
+    static LISTENERS: RefCell<Vec<EventListener>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Insert hook for the suggestion panel: replace the re-selected fragment
+/// with the accepted word through the Vditor API, and mark the file dirty.
+fn suggest_insert(ctx: OssCtx) -> Callback<String> {
+    Callback::new(move |word: String| {
+        OSS_EDITOR.with(|c| {
+            if let Some(e) = c.borrow().as_ref() {
+                // insertValue collapses the selection — delete the selected
+                // fragment first (same as the note editor)
+                e.editor.delete_value();
+                e.editor.insert_value(&word, true);
+            }
+        });
+        ctx.dirty.set(true);
+    })
 }
 
 /// The page has exactly one instance, so handlers live as free functions
@@ -1003,12 +1037,14 @@ pub fn OssView() -> impl IntoView {
         dirty: RwSignal::new(false),
         suppress: RwSignal::new(0.0f64),
         status: RwSignal::new(String::new()),
+        suggest: Suggest::new(),
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
 
     let editor_ref = NodeRef::<Div>::new();
 
-    // editor: init once when the mount node appears; input marks dirty
+    // editor: init once when the mount node appears; input marks dirty and
+    // feeds the suggestion panel
     Effect::new(move |_| {
         let _ = editor_ref.get();
         let already = OSS_EDITOR.with(|c| c.borrow().is_some());
@@ -1018,19 +1054,62 @@ pub fn OssView() -> impl IntoView {
         if let Some(el) = editor_ref.get() {
             let d = ctx.dirty;
             let sup = ctx.suppress;
+            let sug = ctx.suggest;
             let cb = Closure::<dyn FnMut()>::new(move || {
                 // Vditor fires input asynchronously right after set_value —
                 // that echo is not a user edit
                 if js_sys::Date::now() < sup.get() {
+                    sug.close();
                     return;
                 }
                 d.set(true);
+                sug.update(true);
             });
-            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb) {
+            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb, sug) {
                 ctx.status.set(e);
             }
         }
     });
+
+    // suggestion panel: cursor tracking + keyboard navigation. Same pattern
+    // as the note editor — the keydown listener runs in the capture phase so
+    // it can swallow Enter/Tab/Arrows before Vditor sees them.
+    let insert = suggest_insert(ctx);
+    LISTENERS.with(|l| {
+        let sug = ctx.suggest;
+        l.borrow_mut().push(EventListener::new(
+            &document(),
+            "selectionchange",
+            move |_| sug.update(true),
+        ));
+        let sug = ctx.suggest;
+        l.borrow_mut().push(EventListener::new_with_options(
+            &document(),
+            "keydown",
+            gloo_events::EventListenerOptions::run_in_capture_phase(),
+            move |e| {
+                let Some(k) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+                    return;
+                };
+                if !matches!(
+                    k.key().as_str(),
+                    "ArrowDown" | "ArrowUp" | "Enter" | "Tab" | "Escape"
+                ) {
+                    return;
+                }
+                if !sug.is_open() {
+                    return;
+                }
+                k.prevent_default();
+                k.stop_propagation();
+                sug.on_keydown(k, &insert);
+            },
+        ));
+    });
+
+    // suggestion word lists: fetch in the background (shared with the note
+    // editor — a no-op when already loaded)
+    crate::suggest::preload();
 
     // first tree load
     Effect::new(move |_| {
@@ -1120,6 +1199,7 @@ pub fn OssView() -> impl IntoView {
                         }}
                     </div>
                     <div class="oss-editor" node_ref=editor_ref></div>
+                    <SuggestPanel sug=ctx.suggest insert=insert/>
                 </main>
             </div>
         </div>

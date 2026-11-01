@@ -741,10 +741,24 @@ header a:hover {
   background: #f3f6fa;
 }
 .suggest-word {
-  flex: 1;
+  flex-shrink: 0;
+  max-width: 50%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.suggest-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: #a2aab4;
+  text-align: right;
+}
+.suggest-hint:empty {
+  display: none;
 }
 .suggest-lang {
   font-size: 10px;
@@ -756,6 +770,14 @@ header a:hover {
 .suggest-lang.ja {
   background: #fdf2f8;
   color: #be5a8a;
+}
+.suggest-lang.tw {
+  background: #f3f0ff;
+  color: #7a68c0;
+}
+.suggest-lang.en {
+  background: #eaf4ff;
+  color: #3f7ac2;
 }
 .tool,
 .color {
@@ -1030,6 +1052,17 @@ header a:hover {
   .suggest-lang.ja {
     background: #3a2d33;
     color: #d89ab8;
+  }
+  .suggest-lang.tw {
+    background: #332e47;
+    color: #b3a4e6;
+  }
+  .suggest-lang.en {
+    background: #22303f;
+    color: #8fb8e8;
+  }
+  .suggest-hint {
+    color: #8a919c;
   }
   .req-msg {
     color: #888;

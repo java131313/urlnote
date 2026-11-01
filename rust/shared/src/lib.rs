@@ -330,3 +330,76 @@ pub struct MarkInfo {
     pub content: String,
     pub source_updated_at: String,
 }
+
+// ---- four-language dictionary (D1 table `dict`) ----
+//
+// One row holds the same-meaning word in four languages (simplified Chinese,
+// traditional Chinese, Japanese, English). Typing a word that matches any
+// column surfaces the other languages' words as editor suggestions.
+
+/// Single words or short phrases; longer input is rejected rather than
+/// truncated so suggestion rows stay compact.
+pub const DICT_FIELD_MAX_CHARS: usize = 64;
+
+/// One row of the `dict` table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DictEntry {
+    pub id: i64,
+    #[serde(default)]
+    pub zh_cn: String,
+    #[serde(default)]
+    pub zh_tw: String,
+    #[serde(default)]
+    pub ja: String,
+    #[serde(default)]
+    pub en: String,
+}
+
+/// GET /api/dict/lookup response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DictLookupResponse {
+    /// Exact matches first (any language column equals the query), then
+    /// prefix completions, capped server-side.
+    pub entries: Vec<DictEntry>,
+}
+
+/// POST/PUT /api/dict request body (admin only).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct DictUpsertRequest {
+    #[serde(default)]
+    pub zh_cn: String,
+    #[serde(default)]
+    pub zh_tw: String,
+    #[serde(default)]
+    pub ja: String,
+    #[serde(default)]
+    pub en: String,
+}
+
+impl DictUpsertRequest {
+    /// Trim the four fields; `None` when any field exceeds
+    /// DICT_FIELD_MAX_CHARS or all four end up empty (a row with no word at
+    /// all would be invisible to every lookup).
+    pub fn cleaned(&self) -> Option<(String, String, String, String)> {
+        let fields = [&self.zh_cn, &self.zh_tw, &self.ja, &self.en];
+        if fields
+            .iter()
+            .any(|f| f.chars().count() > DICT_FIELD_MAX_CHARS)
+        {
+            return None;
+        }
+        let cleaned: Vec<String> = fields
+            .iter()
+            .map(|f| f.trim().chars().take(DICT_FIELD_MAX_CHARS).collect())
+            .collect();
+        if cleaned.iter().all(|f| f.is_empty()) {
+            return None;
+        }
+        Some((
+            cleaned[0].clone(),
+            cleaned[1].clone(),
+            cleaned[2].clone(),
+            cleaned[3].clone(),
+        ))
+    }
+}

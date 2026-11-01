@@ -5,6 +5,7 @@
 //! wasm-bindgen (see vditor.rs).
 
 mod oss;
+mod suggest;
 mod vditor;
 
 use gloo_events::EventListener;
@@ -14,7 +15,6 @@ use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::*;
-use std::cell::RefCell;
 use vditor::VditorEditor;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -122,12 +122,6 @@ struct AppState {
     loaded: bool,
     applying_remote: bool,
     poll_updated_at: String,
-    // suggestion state: DOM anchor of the typed fragment (char offsets into
-    // the text node) so accepting can re-select and replace it
-    suggest_anchor_node: Option<SendWrapper<web_sys::Node>>,
-    suggest_anchor_start: usize,
-    suggest_anchor_end: usize,
-    suggest_accepted_word: String,
     // POS annotation
     pos_debounce: Option<Timeout>,
     pos_seq: u64,
@@ -181,10 +175,8 @@ struct Ctx {
     edit_requests: RwSignal<Vec<EditRequestItem>>,
     req_panel_open: RwSignal<bool>,
     req_message: RwSignal<String>,
-    // dictionary word suggestions (IME-style completion)
-    suggest_items: RwSignal<Vec<SuggestItem>>,
-    suggest_active: RwSignal<usize>,
-    suggest_pos: RwSignal<(i32, i32)>,
+    // dictionary word suggestions (shared module; panel renders in the view)
+    suggest: suggest::Suggest,
     // grammar analysis results
     analyze_open: RwSignal<bool>,
     analyze_busy: RwSignal<bool>,
@@ -205,12 +197,6 @@ struct Ctx {
     // edit-lock notice: dismissible banner + apply panel
     lock_dismissed: RwSignal<bool>,
     lock_apply_open: RwSignal<bool>,
-}
-
-#[derive(Clone)]
-struct SuggestItem {
-    word: String,
-    is_ja: bool,
 }
 
 impl Ctx {
@@ -812,7 +798,8 @@ impl Ctx {
                 return;
             }
             c.mark_dirty();
-            c.update_suggestions();
+            c.suggest
+                .update(c.can_edit.get() && !c.state.with_value(|st| st.applying_remote));
             c.schedule_pos_refresh(false);
             if c.find_open.get() && !c.find_query.with(|q| q.trim().is_empty()) {
                 let c2 = c;
@@ -828,7 +815,7 @@ impl Ctx {
         let blur_cb = Closure::<dyn FnMut()>::new(move || {
             // defer so a click on a suggestion row still lands first
             let c = c;
-            let _ = Timeout::new(150, move || c.close_suggestions());
+            let _ = Timeout::new(150, move || c.suggest.close());
         });
         set("blur", blur_cb.as_ref().unchecked_ref());
 
@@ -1453,157 +1440,6 @@ impl Ctx {
         });
     }
 
-    // ---- dictionary word suggestions (IME-style) ----
-
-    fn close_suggestions(&self) {
-        self.suggest_items.update(|v| {
-            if !v.is_empty() {
-                v.clear();
-            }
-        });
-        self.state.update_value(|st| st.suggest_anchor_node = None);
-    }
-
-    /// Read the word fragment typed before the cursor and refresh the
-    /// suggestion panel (called from editor input/selection events).
-    fn update_suggestions(&self) {
-        if self.state.with_value(|st| st.applying_remote) || !self.can_edit.get() {
-            self.close_suggestions();
-            return;
-        }
-        let Some(sel) = window().get_selection().ok().flatten() else {
-            self.close_suggestions();
-            return;
-        };
-        if !sel.is_collapsed() {
-            self.close_suggestions();
-            return;
-        }
-        let Some(node) = sel.anchor_node() else {
-            self.close_suggestions();
-            return;
-        };
-        if node.node_type() != web_sys::Node::TEXT_NODE {
-            self.close_suggestions();
-            return;
-        }
-        let offset = sel.anchor_offset();
-        let text = node.text_content().unwrap_or_default();
-        let chars: Vec<char> = text.chars().collect();
-        let offset = offset as usize;
-        if offset > chars.len() {
-            self.close_suggestions();
-            return;
-        }
-        // walk backwards over word characters (CJK or alnum)
-        let mut start = offset;
-        while start > 0 && is_word_char(chars[start - 1]) {
-            start -= 1;
-        }
-        let fragment: String = chars[start..offset].iter().collect();
-        // stay hidden right after accepting: the accepted word itself would
-        // re-trigger the panel at the same cursor position
-        if self
-            .state
-            .with_value(|st| !st.suggest_accepted_word.is_empty())
-        {
-            if self
-                .state
-                .with_value(|st| st.suggest_accepted_word == fragment)
-            {
-                self.close_suggestions();
-                return;
-            }
-            self.state.update_value(|st| st.suggest_accepted_word.clear());
-        }
-        let has_cjk = fragment.chars().any(is_cjk_char);
-        if !has_cjk || fragment.is_empty() || fragment.chars().count() > 8 {
-            self.close_suggestions();
-            return;
-        }
-        let items = lookup_suggestions(&fragment);
-        if items.is_empty() {
-            self.close_suggestions();
-            return;
-        }
-        // position the panel at the cursor (viewport coords + position:fixed)
-        let pos = sel
-            .get_range_at(0)
-            .ok()
-            .map(|r| r.get_bounding_client_rect())
-            .map(|r| (r.left() as i32, (r.bottom() + 4.0) as i32))
-            .unwrap_or((40, 40));
-        self.state.update_value(|st| {
-            st.suggest_anchor_node = Some(SendWrapper::new(node));
-            st.suggest_anchor_start = start;
-            st.suggest_anchor_end = offset;
-        });
-        self.suggest_active.set(0);
-        self.suggest_pos.set(pos);
-        self.suggest_items.set(items);
-    }
-
-    fn on_suggest_keydown(&self, e: &web_sys::KeyboardEvent) {
-        if self.suggest_items.with(|v| v.is_empty()) {
-            return;
-        }
-        let len = self.suggest_items.with(|v| v.len());
-        match e.key().as_str() {
-            "ArrowDown" => {
-                e.prevent_default();
-                self.suggest_active.update(|i| *i = (*i + 1) % len);
-            }
-            "ArrowUp" => {
-                e.prevent_default();
-                self.suggest_active.update(|i| *i = (*i + len - 1) % len);
-            }
-            "Enter" | "Tab" => {
-                e.prevent_default();
-                let i = self.suggest_active.get();
-                self.accept_suggestion(i);
-            }
-            "Escape" => {
-                self.close_suggestions();
-            }
-            _ => {}
-        }
-    }
-
-    /// Replace the typed fragment with the chosen word.
-    fn accept_suggestion(&self, idx: usize) {
-        let Some(item) = self.suggest_items.with(|v| v.get(idx).cloned()) else {
-            return;
-        };
-        let anchor = self.state.with_value(|st| {
-            st.suggest_anchor_node
-                .as_ref()
-                .map(|n| (n.clone(), st.suggest_anchor_start, st.suggest_anchor_end))
-        });
-        self.close_suggestions();
-        let Some((node, start, end)) = anchor else { return };
-        if let (Ok(Some(sel)), Ok(range)) =
-            (window().get_selection(), web_sys::Range::new())
-        {
-            if range.set_start(&node, start as u32).is_ok()
-                && range.set_end(&node, end as u32).is_ok()
-            {
-                sel.remove_all_ranges().ok();
-                sel.add_range(&range).ok();
-                self.state.with_value(|st| {
-                    if let Some(ed) = st.editor.as_ref() {
-                        // insertValue collapses the selection and inserts at
-                        // its start — delete the selected fragment first
-                        ed.editor.delete_value();
-                        ed.editor.insert_value(&item.word, true);
-                    }
-                });
-                self.state
-                    .update_value(|st| st.suggest_accepted_word = item.word.clone());
-                self.mark_dirty();
-            }
-        }
-    }
-
     // ---- export & import ----
 
     /// Download the current editor content as a .md file named after the
@@ -2031,73 +1867,6 @@ fn find_occurrences(text: &str, query: &str) -> Vec<(usize, usize)> {
     out
 }
 
-// ---- suggestion word lists (generated by scripts/gen_suggest_dicts.py) ----
-
-thread_local! {
-    static SUGGEST_ZH: RefCell<Option<std::rc::Rc<Vec<String>>>> = const { RefCell::new(None) };
-    static SUGGEST_JA: RefCell<Option<std::rc::Rc<Vec<String>>>> = const { RefCell::new(None) };
-}
-
-// kick off the fetches once; lookups are no-ops until a list arrives
-fn preload_suggest_dicts() {
-    load_suggest_list(&format!("{BASE_PATH}/dict/suggest_zh.txt"), &SUGGEST_ZH);
-    load_suggest_list(&format!("{BASE_PATH}/dict/suggest_ja.txt"), &SUGGEST_JA);
-}
-
-fn load_suggest_list(
-    url: &str,
-    slot: &'static std::thread::LocalKey<RefCell<Option<std::rc::Rc<Vec<String>>>>>,
-) {
-    let url = url.to_string();
-    spawn_local(async move {
-        let Ok(resp) = gloo_net::http::Request::get(&url).send().await else { return };
-        let Ok(text) = resp.text().await else { return };
-        let mut words: Vec<String> = text.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-        words.sort();
-        words.dedup();
-        slot.with(|c| *c.borrow_mut() = Some(std::rc::Rc::new(words)));
-    });
-}
-
-fn prefix_lookup(
-    slot: &'static std::thread::LocalKey<RefCell<Option<std::rc::Rc<Vec<String>>>>>,
-    prefix: &str,
-    limit: usize,
-    out: &mut Vec<SuggestItem>,
-    is_ja: bool,
-) {
-    slot.with(|c| {
-        let c = c.borrow();
-        let Some(words) = c.as_ref() else { return };
-        let idx = words.partition_point(|w| w.as_str() < prefix);
-        for w in words[idx..].iter().take(limit) {
-            if !w.starts_with(prefix) {
-                break;
-            }
-            out.push(SuggestItem { word: w.clone(), is_ja });
-        }
-    });
-}
-
-fn is_cjk_char(c: char) -> bool {
-    matches!(c,
-        '\u{4e00}'..='\u{9fff}'
-        | '\u{3040}'..='\u{30ff}'
-        | '\u{f900}'..='\u{faff}')
-}
-
-fn is_word_char(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Up to 8 completions for the fragment (4 Chinese + 4 Japanese).
-fn lookup_suggestions(fragment: &str) -> Vec<SuggestItem> {
-    let mut out = Vec::new();
-    prefix_lookup(&SUGGEST_ZH, fragment, 4, &mut out, false);
-    prefix_lookup(&SUGGEST_JA, fragment, 4, &mut out, true);
-    out
-}
-
 /// Strip characters that are illegal in file names (Windows/macOS/Linux).
 fn sanitize_filename(t: &str) -> String {    t.chars()
         .filter(|c| !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r'))
@@ -2421,6 +2190,23 @@ fn main() {
     leptos::mount::mount_to_body(App);
 }
 
+/// Insert hook for the note editor's suggestion panel: the panel has
+/// already re-selected the typed fragment, so delete it and insert the
+/// accepted word through the Vditor API, then mark the note dirty.
+fn note_suggest_insert(ctx: Ctx) -> Callback<String> {
+    Callback::new(move |word: String| {
+        ctx.state.with_value(|st| {
+            if let Some(ed) = st.editor.as_ref() {
+                // insertValue collapses the selection and inserts at its
+                // start — delete the selected fragment first
+                ed.editor.delete_value();
+                ed.editor.insert_value(&word, true);
+            }
+        });
+        ctx.mark_dirty();
+    })
+}
+
 #[component]
 fn App() -> impl IntoView {
     // reserved first path segment: the object-storage file library page
@@ -2464,9 +2250,7 @@ fn App() -> impl IntoView {
     let edit_requests = RwSignal::new(Vec::<EditRequestItem>::new());
     let req_panel_open = RwSignal::new(false);
     let req_message = RwSignal::new(String::new());
-    let suggest_items = RwSignal::new(Vec::<SuggestItem>::new());
-    let suggest_active = RwSignal::new(0usize);
-    let suggest_pos = RwSignal::new((0i32, 0i32));
+    let suggest = suggest::Suggest::new();
     let analyze_open = RwSignal::new(false);
     let analyze_busy = RwSignal::new(false);
     let analyze_issues = RwSignal::new(Vec::<Issue>::new());
@@ -2495,10 +2279,6 @@ fn App() -> impl IntoView {
             loaded: false,
             applying_remote: false,
             poll_updated_at: String::new(),
-            suggest_anchor_node: None,
-            suggest_anchor_start: 0,
-            suggest_anchor_end: 0,
-            suggest_accepted_word: String::new(),
             pos_debounce: None,
             pos_seq: 0,
             pos_scroll_listener: None,
@@ -2533,9 +2313,7 @@ fn App() -> impl IntoView {
         edit_requests,
         req_panel_open,
         req_message,
-        suggest_items,
-        suggest_active,
-        suggest_pos,
+        suggest,
         analyze_open,
         analyze_busy,
         analyze_issues,
@@ -2668,7 +2446,10 @@ fn App() -> impl IntoView {
             st.listeners.push(EventListener::new(
                 &document(),
                 "selectionchange",
-                move |_| ctx.update_suggestions(),
+                move |_| {
+                    ctx.suggest
+                        .update(ctx.can_edit.get() && !ctx.state.with_value(|st| st.applying_remote))
+                },
             ));
         });
     }
@@ -2677,6 +2458,7 @@ fn App() -> impl IntoView {
     // runs before Vditor's own keydown handling (which ignores
     // defaultPrevented), letting us swallow Enter/Tab/Arrows while the panel
     // is open
+    let insert = note_suggest_insert(ctx);
     {
         let ctx = ctx;
         ctx.state.update_value(|st| {
@@ -2694,19 +2476,19 @@ fn App() -> impl IntoView {
                     ) {
                         return;
                     }
-                    if ctx.suggest_items.with(|v| v.is_empty()) {
+                    if !ctx.suggest.is_open() {
                         return;
                     }
                     k.prevent_default();
                     k.stop_propagation();
-                    ctx.on_suggest_keydown(k);
+                    ctx.suggest.on_keydown(k, &insert);
                 },
             ));
         });
     }
 
     // dictionary suggestion word lists: fetch in the background
-    preload_suggest_dicts();
+    suggest::preload();
 
     // keep the editor theme in sync with the OS appearance
     {
@@ -2924,9 +2706,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
         edit_requests,
         req_panel_open,
         req_message,
-        suggest_items,
-        suggest_active,
-        suggest_pos,
+        suggest,
         analyze_open,
         analyze_busy,
         analyze_issues,
@@ -3489,45 +3269,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                     }}
                 </div>
             </Show>
-            <Show when=move || !suggest_items.get().is_empty()>
-                <div
-                    class="suggest-panel"
-                    style=move || {
-                        let (l, t) = suggest_pos.get();
-                        format!("left:{l}px; top:{t}px;")
-                    }
-                    on:mousedown=|e: web_sys::MouseEvent| e.prevent_default()
-                >
-                    <For
-                        each=move || suggest_items.get()
-                        key=|it| format!("{}{}", if it.is_ja { "ja:" } else { "zh:" }, it.word)
-                        children=move |it: SuggestItem| {
-                            let word = it.word.clone();
-                            let idx = suggest_items
-                                .get()
-                                .iter()
-                                .position(|x| x.word == word && x.is_ja == it.is_ja)
-                                .unwrap_or(0);
-                            view! {
-                                <div
-                                    class=move || {
-                                        if suggest_active.get() == idx { "suggest-item active" } else { "suggest-item" }
-                                    }
-                                    on:mouseenter=move |_| suggest_active.set(idx)
-                                    on:click=move |_| ctx.accept_suggestion(idx)
-                                >
-                                    <span class="suggest-word">{word.clone()}</span>
-                                    <span class=move || {
-                                        if it.is_ja { "suggest-lang ja" } else { "suggest-lang" }
-                                    }>
-                                        {if it.is_ja { "日" } else { "中" }}
-                                    </span>
-                                </div>
-                            }
-                        }
-                    />
-                </div>
-            </Show>
+            <suggest::SuggestPanel sug=suggest insert=note_suggest_insert(ctx)/>
             <Show when=move || analyze_open.get()>
                 <div class="analyze-drawer" on:mousedown=|e: web_sys::MouseEvent| e.stop_propagation()>
                     <div class="analyze-head">
