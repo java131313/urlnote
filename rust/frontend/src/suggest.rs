@@ -1,22 +1,23 @@
 //! IME-style word suggestions shared by the note editor (main) and the oss
 //! document library's markdown editor (oss).
 //!
-//! Two sources feed the panel under the cursor:
-//!  - static word lists (suggest_zh.txt / suggest_ja.txt), answered locally;
-//!  - the four-language dictionary in D1 (table `dict`), queried on the
-//!    server with a 200 ms debounce and merged in when it answers.
+//! Data lives in D1: a language table (dict_lang), meaning groups
+//! (dict_group) and words (dict_word) — same-group words in different
+//! languages are mutual translations. The panel header carries a language
+//! selector (persisted per viewer, "auto" follows any language); typing
+//! looks words up in the selected language and shows the group's other
+//! languages as hints / extra rows.
 //!
-//! A dictionary row maps same-meaning words 1:1 across zh-CN / zh-TW / ja /
-//! en, so typing a word that exactly matches any column offers the *other*
-//! languages' words (each row's hint also lists the remaining translations);
-//! a partial word offers completions from every column.
+//! Local static word lists (suggest_zh.txt / suggest_ja.txt) still answer
+//! immediately and cover the pinned zh_cn / ja languages while the server
+//! round-trip is in flight.
 
 use crate::{api_url, window, BASE_PATH};
 use gloo_timers::callback::Timeout;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use send_wrapper::SendWrapper;
-use shared::{DictEntry, DictLookupResponse};
+use shared::{valid_lang_code, DictLang, DictLookupResponse, DictWordItem};
 use std::cell::RefCell;
 use web_sys::RequestCredentials;
 
@@ -24,11 +25,11 @@ use web_sys::RequestCredentials;
 pub struct SuggestItem {
     /// text inserted when the row is accepted
     pub word: String,
-    /// language badge text: "简" | "繁" | "日" | "英" (static lists: "简"/"日")
-    pub lang: &'static str,
+    /// language badge text (from dict_lang.badge)
+    pub lang: String,
     /// extra css class for the badge: "" / "ja" / "tw" / "en"
     pub lang_class: &'static str,
-    /// the entry's other translations, shown beside the word
+    /// the word's translations in other languages, shown beside the word
     pub hint: String,
     /// unique identity for <For> rendering and dedup
     pub key: String,
@@ -47,6 +48,8 @@ struct State {
     /// for a stale fragment is dropped
     seq: usize,
     debounce: Option<Timeout>,
+    /// gate captured at the last update, so switching language can refresh
+    last_enabled: bool,
 }
 
 /// Suggestion controller for ONE editor. Holds only Copy handles, so it can
@@ -56,6 +59,7 @@ pub struct Suggest {
     items: RwSignal<Vec<SuggestItem>>,
     active: RwSignal<usize>,
     pos: RwSignal<(i32, i32)>,
+    langs: RwSignal<Vec<DictLang>>,
     state: StoredValue<SendWrapper<State>>,
 }
 
@@ -65,6 +69,7 @@ impl Suggest {
             items: RwSignal::new(Vec::new()),
             active: RwSignal::new(0),
             pos: RwSignal::new((0, 0)),
+            langs: RwSignal::new(Vec::new()),
             state: StoredValue::new(SendWrapper::new(State {
                 anchor_node: None,
                 anchor_start: 0,
@@ -72,6 +77,7 @@ impl Suggest {
                 accepted_word: String::new(),
                 seq: 0,
                 debounce: None,
+                last_enabled: false,
             })),
         }
     }
@@ -100,6 +106,7 @@ impl Suggest {
     /// `enabled` folds the caller's gates (edit permission, remote applies):
     /// when false the panel is simply closed.
     pub fn update(&self, enabled: bool) {
+        self.state.update_value(|st| st.last_enabled = enabled);
         if !enabled {
             self.close();
             return;
@@ -160,8 +167,10 @@ impl Suggest {
             self.close();
             return;
         }
-        // local word-list completions, shown immediately
-        let items = lookup_local(&fragment);
+        // local word-list completions, shown immediately (only the lists
+        // whose language matches the selector)
+        let selected = selected_lang();
+        let items = lookup_local(&fragment, &selected);
         // panel position + anchor + request sequence for the dictionary lookup
         let pos = sel
             .get_range_at(0)
@@ -182,7 +191,7 @@ impl Suggest {
         if has_items {
             self.active.set(0);
         }
-        self.schedule_lookup(&fragment, seq);
+        self.schedule_lookup(&fragment, &selected, seq);
     }
 
     /// Suggestion panel keyboard navigation. Caller is expected to swallow
@@ -243,17 +252,30 @@ impl Suggest {
     }
 
     /// Debounce the server lookup: every keystroke resets the 200 ms timer.
-    fn schedule_lookup(&self, fragment: &str, seq: usize) {
+    fn schedule_lookup(&self, fragment: &str, lang: &str, seq: usize) {
         let c = *self;
         let fragment = fragment.to_string();
+        let lang = lang.to_string();
         self.state.update_value(|st| {
             if let Some(t) = st.debounce.take() {
                 t.cancel();
             }
             st.debounce = Some(Timeout::new(200, move || {
-                spawn_local(dict_lookup_request(c, fragment, seq));
+                spawn_local(dict_lookup_request(c, fragment, lang, seq));
             }));
         });
+    }
+
+    /// Language selector value ("" = auto / any language).
+    pub fn selected_lang(&self) -> String {
+        selected_lang()
+    }
+
+    /// Switch the selector language and immediately refresh open panel.
+    pub fn set_lang(&self, code: &str) {
+        set_selected_lang(code);
+        let enabled = self.state.with_value(|st| st.last_enabled);
+        self.update(enabled);
     }
 }
 
@@ -271,6 +293,7 @@ pub fn SuggestPanel(sug: Suggest, insert: Callback<String>) -> impl IntoView {
                 }
                 on:mousedown=|e: web_sys::MouseEvent| e.prevent_default()
             >
+                <LangChips sug/>
                 <For
                     each=move || sug.items.get()
                     key=|it| it.key.clone()
@@ -283,7 +306,7 @@ pub fn SuggestPanel(sug: Suggest, insert: Callback<String>) -> impl IntoView {
                             .unwrap_or(0);
                         let word = it.word.clone();
                         let hint = it.hint.clone();
-                        let lang = it.lang;
+                        let lang = it.lang.clone();
                         let lang_class = it.lang_class;
                         view! {
                             <div
@@ -303,6 +326,108 @@ pub fn SuggestPanel(sug: Suggest, insert: Callback<String>) -> impl IntoView {
             </div>
         </Show>
     }
+}
+
+/// Language selector row at the top of the panel: 自动 + one chip per
+/// language from /api/dict/langs. Clicking switches (persisted per viewer).
+#[component]
+fn LangChips(sug: Suggest) -> impl IntoView {
+    view! {
+        <div class="suggest-langs" on:mousedown=|e: web_sys::MouseEvent| e.stop_propagation()>
+            <button
+                type="button"
+                class=move || if sug.selected_lang().is_empty() { "suggest-chip active" } else { "suggest-chip" }
+                on:click=move |_| sug.set_lang("")
+            >
+                "自动"
+            </button>
+            <For
+                each=move || sug.langs.get()
+                key=|l| l.code.clone()
+                children=move |l: DictLang| {
+                    let code = l.code.clone();
+                    let code_for_class = code.clone();
+                    let label = if l.badge.is_empty() { l.name.clone() } else { l.badge.clone() };
+                    let title = l.name.clone();
+                    view! {
+                        <button
+                            type="button"
+                            class=move || {
+                                if sug.selected_lang() == code_for_class { "suggest-chip active" } else { "suggest-chip" }
+                            }
+                            title=title
+                            on:click=move |_| sug.set_lang(&code)
+                        >
+                            {label}
+                        </button>
+                    }
+                }
+            />
+        </div>
+    }
+}
+
+// ---- language selection (persisted per viewer) ----
+
+thread_local! {
+    static LANGS: RefCell<Option<std::rc::Rc<Vec<DictLang>>>> = const { RefCell::new(None) };
+    static SELECTED: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+const LANG_STORAGE_KEY: &str = "urlnote-suggest-lang";
+
+pub fn selected_lang() -> String {
+    SELECTED.with(|c| c.borrow().clone())
+}
+
+pub fn set_selected_lang(code: &str) {
+    SELECTED.with(|c| *c.borrow_mut() = code.to_string());
+    // per-viewer convenience only — best effort
+    if let Ok(Some(store)) = window().local_storage() {
+        if code.is_empty() {
+            let _ = store.remove_item(LANG_STORAGE_KEY);
+        } else {
+            let _ = store.set_item(LANG_STORAGE_KEY, code);
+        }
+    }
+}
+
+fn init_selected_lang() {
+    if let Ok(Some(store)) = window().local_storage() {
+        if let Ok(Some(v)) = store.get_item(LANG_STORAGE_KEY) {
+            if v.is_empty() || valid_lang_code(&v) {
+                SELECTED.with(|c| *c.borrow_mut() = v);
+            }
+        }
+    }
+}
+
+/// Badge text + css class for a language code ("" = neutral, for custom
+/// languages loaded from the server the badge text is taken from langs).
+fn lang_style(code: &str) -> (&'static str, &'static str) {
+    match code {
+        "zh_cn" => ("简", ""),
+        "zh_tw" => ("繁", "tw"),
+        "ja" => ("日", "ja"),
+        "en" => ("英", "en"),
+        _ => ("词", ""),
+    }
+}
+
+/// Badge text for a code: built-in short names first, then the server's
+/// badge, falling back to a neutral glyph.
+fn badge_for(code: &str) -> String {
+    let (built_in, _) = lang_style(code);
+    if built_in != "词" {
+        return built_in.to_string();
+    }
+    LANGS.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|ls| ls.iter().find(|l| l.code == code))
+            .map(|l| if l.badge.is_empty() { "词".to_string() } else { l.badge.clone() })
+            .unwrap_or_else(|| "词".to_string())
+    })
 }
 
 // ---- word fragment classification ----
@@ -325,11 +450,30 @@ thread_local! {
     static SUGGEST_JA: RefCell<Option<std::rc::Rc<Vec<String>>>> = const { RefCell::new(None) };
 }
 
-/// Kick off the fetches once; lookups are no-ops until a list arrives.
-/// Shared by all editors — call from page setup.
-pub fn preload() {
+/// Kick off the background fetches once per page (word lists + languages);
+/// lookups are no-ops until data arrives. Shared by all editors.
+pub fn preload(sug: Suggest) {
     load_list(&format!("{BASE_PATH}/dict/suggest_zh.txt"), &SUGGEST_ZH);
     load_list(&format!("{BASE_PATH}/dict/suggest_ja.txt"), &SUGGEST_JA);
+    init_selected_lang();
+    spawn_local(async move {
+        let Ok(resp) =
+            gloo_net::http::Request::get(&api_url("/api/dict/langs"))
+                .credentials(RequestCredentials::Include)
+                .send()
+                .await
+        else {
+            return;
+        };
+        if !resp.ok() {
+            return;
+        }
+        let Ok(list) = resp.json::<shared::DictLangList>().await else {
+            return;
+        };
+        LANGS.with(|c| *c.borrow_mut() = Some(std::rc::Rc::new(list.langs.clone())));
+        sug.langs.set(list.langs);
+    });
 }
 
 fn load_list(
@@ -365,7 +509,7 @@ fn prefix_lookup(
             }
             out.push(SuggestItem {
                 word: w.clone(),
-                lang,
+                lang: lang.to_string(),
                 lang_class,
                 hint: String::new(),
                 key: format!("{lang}:{w}"),
@@ -374,87 +518,90 @@ fn prefix_lookup(
     });
 }
 
-/// Up to 8 completions for the fragment (4 Chinese + 4 Japanese) from the
-/// static word lists; the four-language dictionary is merged in separately
-/// when the server answers (see dict_lookup_request).
-fn lookup_local(fragment: &str) -> Vec<SuggestItem> {
+/// Static word-list completions. With the selector on a specific language
+/// only that language's list applies (auto = both).
+fn lookup_local(fragment: &str, selected: &str) -> Vec<SuggestItem> {
     let mut out = Vec::new();
-    prefix_lookup(&SUGGEST_ZH, fragment, 4, &mut out, "简", "");
-    prefix_lookup(&SUGGEST_JA, fragment, 4, &mut out, "日", "ja");
+    if selected.is_empty() || selected == "zh_cn" {
+        prefix_lookup(&SUGGEST_ZH, fragment, 4, &mut out, "简", "");
+    }
+    if selected.is_empty() || selected == "ja" {
+        prefix_lookup(&SUGGEST_JA, fragment, 4, &mut out, "日", "ja");
+    }
     out
 }
 
-// ---- four-language dictionary (D1 table `dict`) ----
+// ---- dictionary lookup (D1 tables dict_lang / dict_group / dict_word) ----
 
-fn dict_zh(e: &DictEntry) -> &str {
-    &e.zh_cn
-}
-fn dict_tw(e: &DictEntry) -> &str {
-    &e.zh_tw
-}
-fn dict_ja_field(e: &DictEntry) -> &str {
-    &e.ja
-}
-fn dict_en(e: &DictEntry) -> &str {
-    &e.en
-}
-
-/// (badge text, badge css class, field getter) per dictionary language.
-type DictFieldGetter = fn(&DictEntry) -> &str;
-const DICT_LANGS: [(&str, &str, DictFieldGetter); 4] = [
-    ("简", "", dict_zh),
-    ("繁", "tw", dict_tw),
-    ("日", "ja", dict_ja_field),
-    ("英", "en", dict_en),
-];
-
-/// Dictionary rows → suggestion items, at most 6. An exact hit (a field
-/// equals the typed fragment) yields one item per *other* language — the
-/// typed word itself is already there; a prefix-only hit yields every
-/// non-empty field as a completion. Every item's hint lists the row's
-/// remaining translations, so the other languages are visible at a glance.
-fn dict_suggest_items(fragment: &str, entries: &[DictEntry]) -> Vec<SuggestItem> {
+/// Dictionary words → suggestion items, at most 10. Each matched word
+/// completes itself with its translations as the hint; an exact hit (word
+/// equals the typed fragment) additionally offers every translation as its
+/// own insertable row — the other languages are one Enter away.
+fn dict_suggest_items(fragment: &str, words: &[DictWordItem]) -> Vec<SuggestItem> {
     let mut out: Vec<SuggestItem> = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    'rows: for e in entries {
-        let exact = DICT_LANGS.iter().any(|(_, _, get)| get(e) == fragment);
-        for (lang, lang_class, get) in DICT_LANGS {
-            let w = get(e);
-            if w.is_empty() || (exact && w == fragment) {
-                continue;
-            }
-            let key = format!("{lang}:{w}");
-            if !seen.insert(key.clone()) {
-                continue;
-            }
-            let hint = DICT_LANGS
-                .iter()
-                .map(|(_, _, g)| g(e))
-                .filter(|v| !v.is_empty() && *v != w && *v != fragment)
-                .collect::<Vec<_>>()
-                .join(" · ");
+    for w in words {
+        let (badge, class) = lang_style(&w.lang);
+        let badge = if badge == "词" { badge_for(&w.lang) } else { badge.to_string() };
+        let hint = w
+            .trans
+            .values()
+            .map(|word| word.as_str())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let key = format!("{}:{}", w.lang, w.word);
+        if seen.insert(key.clone()) {
             out.push(SuggestItem {
-                word: w.to_string(),
-                lang,
-                lang_class,
+                word: w.word.clone(),
+                lang: badge.clone(),
+                lang_class: class,
                 hint,
                 key,
             });
-            if out.len() >= 6 {
-                break 'rows;
+        }
+        // exact hit: the typed word is already there — offer its
+        // translations as insertable rows too
+        if w.word == fragment {
+            for (code, tw) in &w.trans {
+                if *tw == fragment {
+                    continue;
+                }
+                let key = format!("{code}:{tw}");
+                if !seen.insert(key.clone()) {
+                    continue;
+                }
+                let (tb, tc) = lang_style(code);
+                let tb = if tb == "词" { badge_for(code) } else { tb.to_string() };
+                let hint = w
+                    .trans
+                    .iter()
+                    .filter(|(c, t)| c.as_str() != code.as_str() && t.as_str() != fragment && t.as_str() != tw.as_str())
+                    .map(|(_, t)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                out.push(SuggestItem {
+                    word: tw.clone(),
+                    lang: tb,
+                    lang_class: tc,
+                    hint,
+                    key,
+                });
             }
+        }
+        if out.len() >= 10 {
+            break;
         }
     }
     out
 }
 
 /// Dictionary items first, then whatever local completions were already
-/// showing, deduped by key, capped at 8 rows.
+/// showing, deduped by key, capped at 10 rows.
 fn merge_items(dict_items: Vec<SuggestItem>, local: Vec<SuggestItem>) -> Vec<SuggestItem> {
     let mut out = dict_items;
     let mut seen: std::collections::HashSet<String> = out.iter().map(|i| i.key.clone()).collect();
     for it in local {
-        if out.len() >= 8 {
+        if out.len() >= 10 {
             break;
         }
         if seen.insert(it.key.clone()) {
@@ -464,14 +611,18 @@ fn merge_items(dict_items: Vec<SuggestItem>, local: Vec<SuggestItem>) -> Vec<Sug
     out
 }
 
-/// Debounced lookup against GET /api/dict/lookup. A failure (older backend,
-/// network error) silently keeps the local-only suggestions.
-async fn dict_lookup_request(c: Suggest, fragment: String, seq: usize) {
+/// Debounced lookup against GET /api/dict/lookup (lang = the selector
+/// value, empty = auto). A failure (older backend, network error) silently
+/// keeps the local-only suggestions.
+async fn dict_lookup_request(c: Suggest, fragment: String, lang: String, seq: usize) {
     let enc: String = js_sys::encode_uri_component(&fragment).into();
-    let Ok(resp) = gloo_net::http::Request::get(&api_url(&format!("/api/dict/lookup?q={enc}")))
-        .credentials(RequestCredentials::Include)
-        .send()
-        .await
+    let lang_enc: String = js_sys::encode_uri_component(&lang).into();
+    let Ok(resp) = gloo_net::http::Request::get(&api_url(&format!(
+        "/api/dict/lookup?q={enc}&lang={lang_enc}"
+    )))
+    .credentials(RequestCredentials::Include)
+    .send()
+    .await
     else {
         return;
     };
@@ -481,14 +632,15 @@ async fn dict_lookup_request(c: Suggest, fragment: String, seq: usize) {
     let Ok(data) = resp.json::<DictLookupResponse>().await else {
         return;
     };
-    if data.entries.is_empty() {
+    if data.words.is_empty() {
         return;
     }
-    // the cursor moved or the panel closed while the request was in flight
+    // the cursor moved, the panel closed, or the selector changed while the
+    // request was in flight
     if c.state.with_value(|st| st.seq != seq) {
         return;
     }
-    let dict_items = dict_suggest_items(&fragment, &data.entries);
+    let dict_items = dict_suggest_items(&fragment, &data.words);
     if dict_items.is_empty() {
         return;
     }

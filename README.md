@@ -90,11 +90,13 @@ make dev             # wrangler dev，http://localhost:8787
 | POST | `/api/note/{id}` | 同上（sendBeacon 兼容） |
 | GET | `/api/notes` | 列出所有便签元数据 `{notes:[{id,title,tags,updated_at,excerpt,author}]}`，按更新时间倒序 |
 | POST | `/api/presence` | 协作心跳 `{note_id}`，返回该便签当前在线用户 `{users:[...]}`（KV 90s TTL） |
-| GET | `/api/dict/lookup?q=` | 四语词典查询：任一语言列精确匹配（简中/繁中/日/英同行同义一一对应），不足 8 条再补前缀匹配，返回 `{entries:[{id,zh_cn,zh_tw,ja,en}]}`（编辑器提示用） |
-| GET | `/api/dict?q=` | 词典列表/过滤（admin） |
-| POST | `/api/dict` | 新增词典词条 `{zh_cn,zh_tw,ja,en}`（admin，至少一个非空、单字段 ≤64 字符） |
-| PUT | `/api/dict/{id}` | 更新词条（admin） |
-| DELETE | `/api/dict/{id}` | 删除词条（admin） |
+| GET | `/api/dict/langs` | 语言表 `{langs:[{code,name,badge}]}`（编辑器语言选择器选项） |
+| GET | `/api/dict/lookup?q=&lang=` | 词典查询：`lang` 指定在某语言下前缀匹配（留空=不限语言），精确命中优先（≤8 条），返回 `{words:[{id,group_id,lang,word,trans:{语言code:译词}}]}`（编辑器提示用） |
+| POST | `/api/dict/langs` | 新增语言 `{code,name,badge}`（admin，code 为小写字母/数字/下划线） |
+| GET | `/api/dict/words?q=&lang=` | 词表列表/过滤（admin，≤500 条） |
+| POST | `/api/dict/words` | 新增词 `{lang,word,group_id?,trans?}`（admin；不带 group_id 时新建词义组，`trans` 可附带其它语言译词） |
+| PUT | `/api/dict/words/{id}` | 改词/移动到其它词义组（admin） |
+| DELETE | `/api/dict/words/{id}` | 删除词（空组自动清理）（admin） |
 | POST | `/api/upload` | 图片上传（multipart 字段 `file[]`），返回 Vditor 协议 `{code,data:{succMap,errFiles}}` |
 | GET | `/i/{name}` | 提供已上传图片（需登录；`Cache-Control: immutable`） |
 
@@ -118,7 +120,8 @@ rust/
 frontend/        # 旧 Vue 3 前端（留档）
 schema.sql       # D1 建表语句（含 editor settings 列与四语词典 dict 表）
 migrations/      # 已部署数据库的增量迁移
-scripts/dict_seed.sql  # 四语词典示例词条（可选，INSERT 去重可重复执行）
+scripts/gen_dict_seed.py  # 生成 dict_seed.sql（70 组四语对照 + 6 万静态高频词入库）
+scripts/dict_seed.sql     # 生成的种子（INSERT OR IGNORE + 稳定 key，可重复执行）
 wrangler.toml      # 默认：Rust Worker / D1 / Assets 配置
 Makefile         # build（Rust）/ dev / deploy / 数据库初始化
 archive/         # 旧版代码留档（文件存储版 / MySQL+Docker 版）

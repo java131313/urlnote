@@ -41,6 +41,7 @@ web-sys = { version = "0.3", features = [
     "Range",
     "RequestCredentials",
     "Selection",
+    "Storage",
     "Url",
     "Window",
 ] }

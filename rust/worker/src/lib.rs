@@ -158,10 +158,14 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, ["api", "mark", id]) => get_mark(req, &env, id).await,
         (Method::Post, ["api", "search", "reindex"]) => reindex_search(&req, &env).await,
         (Method::Get, ["api", "dict", "lookup"]) => dict_lookup(&req, &env).await,
-        (Method::Get, ["api", "dict"]) => list_dict(&req, &env).await,
-        (Method::Post, ["api", "dict"]) => create_dict(req, &env).await,
-        (Method::Put, ["api", "dict", id]) => update_dict(req, &env, id).await,
-        (Method::Delete, ["api", "dict", id]) => delete_dict(&req, &env, id).await,
+        (Method::Get, ["api", "dict", "langs"]) => dict_langs(&req, &env).await,
+        (Method::Post, ["api", "dict", "langs"]) => create_lang(req, &env).await,
+        (Method::Get, ["api", "dict", "words"]) => list_words(&req, &env).await,
+        (Method::Post, ["api", "dict", "words"]) => create_word(req, &env).await,
+        (Method::Put, ["api", "dict", "words", id]) => update_word(req, &env, id).await,
+        (Method::Delete, ["api", "dict", "words", id]) => {
+            delete_word(&req, &env, id).await
+        }
         (Method::Post, ["api", "edit-lock"]) => set_edit_lock(req, &env).await,
         (Method::Post, ["api", "edit-request"]) => submit_edit_request(req, &env).await,
         (Method::Get, ["api", "edit-requests"]) => list_edit_requests(&req, &env).await,
@@ -1050,32 +1054,35 @@ async fn search_notes(req: &Request, env: &Env) -> Result<Response> {
 
 // ---- four-language dictionary ----
 //
-// The `dict` table maps same-meaning words across zh-CN / zh-TW / ja / en
-// (one row per meaning). The editor queries /api/dict/lookup as the user
-// types and offers the row's other languages as insertable suggestions.
+// Words live in dict_word, linked to a language (dict_lang) and a meaning
+// group (dict_group); same-group words in different languages are mutual
+// translations. The editor's language selector picks which language to
+// search in (empty = any); /api/dict/lookup returns prefix matches with
+// their groups' other words attached.
 
 const DICT_LOOKUP_MAX_CHARS: usize = 32;
 const DICT_LOOKUP_LIMIT: usize = 8;
 
 #[derive(Deserialize)]
-struct DictRow {
+struct DictWordRow {
     id: i64,
-    zh_cn: String,
-    zh_tw: String,
-    ja: String,
-    en: String,
+    group_id: i64,
+    word: String,
+    lang: String,
 }
 
-impl From<DictRow> for DictEntry {
-    fn from(r: DictRow) -> Self {
-        DictEntry {
-            id: r.id,
-            zh_cn: r.zh_cn,
-            zh_tw: r.zh_tw,
-            ja: r.ja,
-            en: r.en,
-        }
-    }
+#[derive(Deserialize)]
+struct DictLangRow {
+    code: String,
+    name: String,
+    badge: String,
+}
+
+#[derive(Deserialize)]
+struct DictTransRow {
+    group_id: i64,
+    word: String,
+    lang: String,
 }
 
 /// Escape LIKE wildcards so the user's own `%`/`_` never broaden the match.
@@ -1091,11 +1098,80 @@ fn like_pattern(q: &str) -> String {
     s
 }
 
-/// GET /api/dict/lookup?q=... — rows where any language column equals the
-/// query (exact matches first), then rows where one starts with it.
+/// Fetch every word of the given groups — used to attach translations.
+async fn group_translations(
+    db: &D1Database,
+    group_ids: &[i64],
+) -> Result<Vec<DictTransRow>> {
+    if group_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = group_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    // placeholders are '?' only; the ids are i64 values bound below
+    let sql = format!(
+        "SELECT w.group_id, w.word, l.code AS lang
+         FROM dict_word w JOIN dict_lang l ON l.id = w.lang_id
+         WHERE w.group_id IN ({placeholders})"
+    );
+    let mut binds: Vec<JsValue> = Vec::with_capacity(group_ids.len());
+    for id in group_ids {
+        binds.push(JsValue::from(*id));
+    }
+    db.prepare(&sql).bind(&binds)?.all().await?.results::<DictTransRow>()
+}
+
+/// Build DictWordItems from matched rows + their groups' words.
+fn assemble_items(rows: Vec<DictWordRow>, trans: &[DictTransRow]) -> Vec<DictWordItem> {
+    rows.into_iter()
+        .map(|r| {
+            let trans_map = trans
+                .iter()
+                .filter(|t| t.group_id == r.group_id && !(t.lang == r.lang && t.word == r.word))
+                .map(|t| (t.lang.clone(), t.word.clone()))
+                .collect();
+            DictWordItem {
+                id: r.id,
+                group_id: r.group_id,
+                lang: r.lang,
+                word: r.word,
+                trans: trans_map,
+            }
+        })
+        .collect()
+}
+
+/// GET /api/dict/langs — the frontend's language selector options.
+async fn dict_langs(req: &Request, env: &Env) -> Result<Response> {
+    require_user!(req, env);
+    let rows = env
+        .d1("DB")?
+        .prepare("SELECT code, name, badge FROM dict_lang ORDER BY ord, id")
+        .all()
+        .await?
+        .results::<DictLangRow>()?;
+    let payload = serde_json::to_vec(&DictLangList {
+        langs: rows
+            .into_iter()
+            .map(|r| DictLang {
+                code: r.code,
+                name: r.name,
+                badge: r.badge,
+            })
+            .collect(),
+    })
+    .unwrap();
+    json_response(200, payload, None)
+}
+
+/// GET /api/dict/lookup?q=&lang= — prefix matches in the selected language
+/// (empty `lang` = any), exact hits first, each with its translations.
 async fn dict_lookup(req: &Request, env: &Env) -> Result<Response> {
     require_user!(req, env);
-    let empty = || serde_json::to_vec(&DictLookupResponse { entries: vec![] }).unwrap();
+    let empty = || serde_json::to_vec(&DictLookupResponse { words: vec![] }).unwrap();
 
     let Some(q) = query_param(req, "q") else {
         return json_response(200, empty(), None);
@@ -1104,124 +1180,260 @@ async fn dict_lookup(req: &Request, env: &Env) -> Result<Response> {
     if q.is_empty() || q.chars().count() > DICT_LOOKUP_MAX_CHARS {
         return json_response(200, empty(), None);
     }
+    let lang = query_param(req, "lang").unwrap_or_default();
+    let lang = lang.trim().to_string();
+    if !lang.is_empty() && !valid_lang_code(&lang) {
+        return json_response(200, empty(), None);
+    }
     let db = env.d1("DB")?;
-    let exact = db
+    let rows = db
         .prepare(
-            "SELECT id, zh_cn, zh_tw, ja, en FROM dict
-             WHERE zh_cn = ?1 OR zh_tw = ?1 OR ja = ?1 OR en = ?1
-             ORDER BY id LIMIT ?2",
+            "SELECT w.id, w.group_id, w.word, l.code AS lang
+             FROM dict_word w JOIN dict_lang l ON l.id = w.lang_id
+             WHERE (?1 = '' OR l.code = ?1)
+               AND w.word LIKE ?2 ESCAPE '\\'
+             ORDER BY (w.word = ?3) DESC, w.word ASC
+             LIMIT ?4",
         )
-        .bind(&[JsValue::from(q), JsValue::from(DICT_LOOKUP_LIMIT as i64)])?
+        .bind(&[
+            JsValue::from(lang),
+            JsValue::from(like_pattern(q)),
+            JsValue::from(q),
+            JsValue::from(DICT_LOOKUP_LIMIT as i64),
+        ])?
         .all()
         .await?
-        .results::<DictRow>()?;
-    let mut entries: Vec<DictEntry> = exact.into_iter().map(DictEntry::from).collect();
-    if entries.len() < DICT_LOOKUP_LIMIT {
-        let rest = (DICT_LOOKUP_LIMIT - entries.len()) as i64;
-        let prefix = db
-            .prepare(
-                "SELECT id, zh_cn, zh_tw, ja, en FROM dict
-                 WHERE (zh_cn LIKE ?1 ESCAPE '\\' OR zh_tw LIKE ?1 ESCAPE '\\'
-                        OR ja LIKE ?1 ESCAPE '\\' OR en LIKE ?1 ESCAPE '\\')
-                   AND NOT (zh_cn = ?2 OR zh_tw = ?2 OR ja = ?2 OR en = ?2)
-                 ORDER BY id LIMIT ?3",
-            )
-            .bind(&[
-                JsValue::from(like_pattern(q)),
-                JsValue::from(q),
-                JsValue::from(rest),
-            ])?
-            .all()
-            .await?
-            .results::<DictRow>()?;
-        entries.extend(prefix.into_iter().map(DictEntry::from));
-    }
-    let payload = serde_json::to_vec(&DictLookupResponse { entries }).unwrap();
-    json_response(200, payload, None)
-}
-
-/// GET /api/dict?q=... — list rows (optional filter), admin only. Exists so
-/// the table can be inspected/managed without raw D1 access.
-async fn list_dict(req: &Request, env: &Env) -> Result<Response> {
-    let user = require_user!(req, env);
-    if !is_admin(&user) {
-        return json_error(403, "forbidden");
-    }
-    let q = query_param(req, "q").unwrap_or_default();
-    let db = env.d1("DB")?;
-    let rows = if q.trim().is_empty() {
-        db.prepare("SELECT id, zh_cn, zh_tw, ja, en FROM dict ORDER BY id LIMIT 500")
-            .all()
-            .await?
-            .results::<DictRow>()?
-    } else {
-        let pattern = like_pattern(q.trim());
-        db.prepare(
-            "SELECT id, zh_cn, zh_tw, ja, en FROM dict
-             WHERE zh_cn LIKE ?1 ESCAPE '\\' OR zh_tw LIKE ?1 ESCAPE '\\'
-                OR ja LIKE ?1 ESCAPE '\\' OR en LIKE ?1 ESCAPE '\\'
-             ORDER BY id LIMIT 500",
-        )
-        .bind(&[JsValue::from(pattern)])?
-        .all()
-        .await?
-        .results::<DictRow>()?
-    };
+        .results::<DictWordRow>()?;
+    let group_ids: Vec<i64> = rows.iter().map(|r| r.group_id).collect();
+    let trans = group_translations(&db, &group_ids).await?;
     let payload = serde_json::to_vec(&DictLookupResponse {
-        entries: rows.into_iter().map(DictEntry::from).collect(),
+        words: assemble_items(rows, &trans),
     })
     .unwrap();
     json_response(200, payload, None)
 }
 
-/// POST /api/dict — add a row, admin only.
-async fn create_dict(mut req: Request, env: &Env) -> Result<Response> {
+/// GET /api/dict/words?q=&lang= — list/filter words, admin only.
+async fn list_words(req: &Request, env: &Env) -> Result<Response> {
+    let user = require_user!(req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let q = query_param(req, "q").unwrap_or_default();
+    let q = q.trim().to_string();
+    let lang = query_param(req, "lang").unwrap_or_default();
+    let db = env.d1("DB")?;
+    let rows = db
+        .prepare(
+            "SELECT w.id, w.group_id, w.word, l.code AS lang
+             FROM dict_word w JOIN dict_lang l ON l.id = w.lang_id
+             WHERE (?1 = '' OR l.code = ?1)
+               AND (?2 = '' OR w.word LIKE ?3 ESCAPE '\\')
+             ORDER BY w.id DESC LIMIT 500",
+        )
+        .bind(&[
+            JsValue::from(lang),
+            JsValue::from(q.clone()),
+            JsValue::from(like_pattern(&q)),
+        ])?
+        .all()
+        .await?
+        .results::<DictWordRow>()?;
+    let payload = serde_json::to_vec(&DictLookupResponse {
+        words: rows
+            .into_iter()
+            .map(|r| DictWordItem {
+                id: r.id,
+                group_id: r.group_id,
+                lang: r.lang,
+                word: r.word,
+                trans: Default::default(),
+            })
+            .collect(),
+    })
+    .unwrap();
+    json_response(200, payload, None)
+}
+
+/// Does a meaning group exist?
+async fn group_exists(db: &D1Database, id: i64) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct GroupIdRow {
+        id: i64,
+    }
+    Ok(db
+        .prepare("SELECT id FROM dict_group WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<GroupIdRow>(None)
+        .await?
+        .is_some())
+}
+
+/// Remove meaning groups that no longer hold any word.
+async fn sweep_empty_groups(db: &D1Database) -> Result<()> {
+    db.prepare(
+        "DELETE FROM dict_group WHERE NOT EXISTS
+             (SELECT 1 FROM dict_word WHERE dict_word.group_id = dict_group.id)",
+    )
+    .run()
+    .await?;
+    Ok(())
+}
+
+/// POST /api/dict/langs — add a language, admin only.
+async fn create_lang(mut req: Request, env: &Env) -> Result<Response> {
     let user = require_user!(&req, env);
     if !is_admin(&user) {
         return json_error(403, "forbidden");
     }
-    let body: DictUpsertRequest = match req.json().await {
+    let body: DictLangUpsert = match req.json().await {
         Ok(b) => b,
         Err(_) => return json_error(400, "bad request"),
     };
-    let Some((zh_cn, zh_tw, ja, en)) = body.cleaned() else {
+    if !valid_lang_code(&body.code) {
+        return json_error(400, "bad request");
+    }
+    let Some(name) = clean_dict_field(&body.name).filter(|s| !s.is_empty()) else {
         return json_error(400, "bad request");
     };
-    let result = env
-        .d1("DB")?
-        .prepare(
-            "INSERT INTO dict (zh_cn, zh_tw, ja, en) VALUES (?1, ?2, ?3, ?4)",
-        )
-        .bind(&[
-            JsValue::from(zh_cn),
-            JsValue::from(zh_tw),
-            JsValue::from(ja),
-            JsValue::from(en),
-        ])?
-        .run()
-        .await?;
-    let id = result.meta().ok().flatten().and_then(|m| m.last_row_id);
-    // echo the created row when its id is known, a bare ok otherwise
-    let payload = match id {
-        Some(id) => {
-            let row = env
-                .d1("DB")?
-                .prepare("SELECT id, zh_cn, zh_tw, ja, en FROM dict WHERE id = ?1 LIMIT 1")
-                .bind(&[JsValue::from(id)])?
-                .first::<DictRow>(None)
-                .await?;
-            match row {
-                Some(r) => serde_json::to_vec(&DictEntry::from(r)).unwrap(),
-                None => serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
-            }
-        }
-        None => serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
+    let badge = clean_dict_field(&body.badge).unwrap_or_default();
+    let badge = if badge.is_empty() {
+        name.chars().next().unwrap_or('?').to_string()
+    } else {
+        badge
     };
+    let db = env.d1("DB")?;
+    let exists = db
+        .prepare("SELECT code FROM dict_lang WHERE code = ?1 LIMIT 1")
+        .bind(&[JsValue::from(body.code.clone())])?
+        .first::<DictLangRow>(None)
+        .await?;
+    if exists.is_some() {
+        return json_error(409, "language exists");
+    }
+    db.prepare(
+        "INSERT INTO dict_lang (code, name, badge, ord)
+         VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(ord), 0) + 1 FROM dict_lang))",
+    )
+    .bind(&[
+        JsValue::from(body.code.clone()),
+        JsValue::from(name.clone()),
+        JsValue::from(badge.clone()),
+    ])?
+    .run()
+    .await?;
+    let payload = serde_json::to_vec(&DictLang {
+        code: body.code,
+        name,
+        badge,
+    })
+    .unwrap();
     json_response(200, payload, None)
 }
 
-/// PUT /api/dict/{id} — update a row, admin only.
-async fn update_dict(mut req: Request, env: &Env, id: &str) -> Result<Response> {
+/// POST /api/dict/words — add a word (creating its meaning group unless
+/// `group_id` is given) plus optional sibling translations, admin only.
+async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
+    let user = require_user!(&req, env);
+    if !is_admin(&user) {
+        return json_error(403, "forbidden");
+    }
+    let body: DictWordUpsert = match req.json().await {
+        Ok(b) => b,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    if !valid_lang_code(&body.lang) {
+        return json_error(400, "bad request");
+    }
+    let Some(word) = clean_dict_field(&body.word).filter(|s| !s.is_empty()) else {
+        return json_error(400, "bad request");
+    };
+    let db = env.d1("DB")?;
+    #[derive(Deserialize)]
+    struct LangIdRow {
+        id: i64,
+    }
+    let lang_id = db
+        .prepare("SELECT id FROM dict_lang WHERE code = ?1 LIMIT 1")
+        .bind(&[JsValue::from(body.lang.clone())])?
+        .first::<LangIdRow>(None)
+        .await?
+        .map(|r| r.id);
+    let Some(lang_id) = lang_id else {
+        return json_error(400, "unknown language");
+    };
+
+    let group_id = match body.group_id {
+        Some(g) => {
+            if !group_exists(&db, g).await? {
+                return json_error(400, "unknown group");
+            }
+            g
+        }
+        None => {
+            let result = db
+                .prepare("INSERT INTO dict_group (key) VALUES (NULL)")
+                .run()
+                .await?;
+            let id = result.meta().ok().flatten().and_then(|m| m.last_row_id);
+            let Some(id) = id else {
+                return json_error(500, "create group failed");
+            };
+            id
+        }
+    };
+
+    // ensure the word exists and sits in the requested group (the unique
+    // (lang_id, word) index makes the mapping unambiguous)
+    db.prepare(
+        "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word) VALUES (?1, ?2, ?3)",
+    )
+    .bind(&[JsValue::from(group_id), JsValue::from(lang_id), JsValue::from(word.clone())])?
+    .run()
+    .await?;
+    db.prepare("UPDATE dict_word SET group_id = ?1 WHERE lang_id = ?2 AND word = ?3")
+        .bind(&[JsValue::from(group_id), JsValue::from(lang_id), JsValue::from(word.clone())])?
+        .run()
+        .await?;
+
+    // sibling translations of the same group
+    for (code, w) in &body.trans {
+        if !valid_lang_code(code) {
+            continue;
+        }
+        let Some(w) = clean_dict_field(w).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        db.prepare(
+            "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word)
+             SELECT ?1, l.id, ?2 FROM dict_lang l WHERE l.code = ?3",
+        )
+        .bind(&[JsValue::from(group_id), JsValue::from(w), JsValue::from(code.clone())])?
+        .run()
+        .await?;
+    }
+
+    let row = db
+        .prepare(
+            "SELECT w.id, w.group_id, w.word, l.code AS lang
+             FROM dict_word w JOIN dict_lang l ON l.id = w.lang_id
+             WHERE w.lang_id = ?1 AND w.word = ?2 LIMIT 1",
+        )
+        .bind(&[JsValue::from(lang_id), JsValue::from(word)])?
+        .first::<DictWordRow>(None)
+        .await?;
+    let Some(row) = row else {
+        return json_error(500, "create word failed");
+    };
+    let trans = group_translations(&db, &[row.group_id]).await?;
+    let item = assemble_items(vec![row], &trans).into_iter().next().unwrap();
+    sweep_empty_groups(&db).await?;
+    let payload = serde_json::to_vec(&item).unwrap();
+    json_response(200, payload, None)
+}
+
+/// PUT /api/dict/words/{id} — rename and/or move to another group, admin.
+async fn update_word(mut req: Request, env: &Env, id: &str) -> Result<Response> {
     let user = require_user!(&req, env);
     if !is_admin(&user) {
         return json_error(403, "forbidden");
@@ -1229,31 +1441,32 @@ async fn update_dict(mut req: Request, env: &Env, id: &str) -> Result<Response> 
     let Ok(id) = id.parse::<i64>() else {
         return json_error(400, "bad request");
     };
-    let body: DictUpsertRequest = match req.json().await {
+    let body: DictWordUpsert = match req.json().await {
         Ok(b) => b,
         Err(_) => return json_error(400, "bad request"),
     };
-    let Some((zh_cn, zh_tw, ja, en)) = body.cleaned() else {
-        return json_error(400, "bad request");
-    };
-    env.d1("DB")?
-        .prepare(
-            "UPDATE dict SET zh_cn = ?1, zh_tw = ?2, ja = ?3, en = ?4 WHERE id = ?5",
-        )
-        .bind(&[
-            JsValue::from(zh_cn),
-            JsValue::from(zh_tw),
-            JsValue::from(ja),
-            JsValue::from(en),
-            JsValue::from(id),
-        ])?
-        .run()
-        .await?;
+    let db = env.d1("DB")?;
+    if let Some(word) = clean_dict_field(&body.word).filter(|s| !s.is_empty()) {
+        db.prepare("UPDATE dict_word SET word = ?1 WHERE id = ?2")
+            .bind(&[JsValue::from(word), JsValue::from(id)])?
+            .run()
+            .await?;
+    }
+    if let Some(g) = body.group_id {
+        if !group_exists(&db, g).await? {
+            return json_error(400, "unknown group");
+        }
+        db.prepare("UPDATE dict_word SET group_id = ?1 WHERE id = ?2")
+            .bind(&[JsValue::from(g), JsValue::from(id)])?
+            .run()
+            .await?;
+    }
+    sweep_empty_groups(&db).await?;
     json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
 }
 
-/// DELETE /api/dict/{id} — remove a row, admin only.
-async fn delete_dict(req: &Request, env: &Env, id: &str) -> Result<Response> {
+/// DELETE /api/dict/words/{id} — remove a word (empty groups swept), admin.
+async fn delete_word(req: &Request, env: &Env, id: &str) -> Result<Response> {
     let user = require_user!(req, env);
     if !is_admin(&user) {
         return json_error(403, "forbidden");
@@ -1261,11 +1474,12 @@ async fn delete_dict(req: &Request, env: &Env, id: &str) -> Result<Response> {
     let Ok(id) = id.parse::<i64>() else {
         return json_error(400, "bad request");
     };
-    env.d1("DB")?
-        .prepare("DELETE FROM dict WHERE id = ?1")
+    let db = env.d1("DB")?;
+    db.prepare("DELETE FROM dict_word WHERE id = ?1")
         .bind(&[JsValue::from(id)])?
         .run()
         .await?;
+    sweep_empty_groups(&db).await?;
     json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
 }
 

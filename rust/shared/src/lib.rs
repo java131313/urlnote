@@ -331,75 +331,91 @@ pub struct MarkInfo {
     pub source_updated_at: String,
 }
 
-// ---- four-language dictionary (D1 table `dict`) ----
+// ---- four-language dictionary (D1 tables dict_lang / dict_group / dict_word) ----
 //
-// One row holds the same-meaning word in four languages (simplified Chinese,
-// traditional Chinese, Japanese, English). Typing a word that matches any
-// column surfaces the other languages' words as editor suggestions.
+// Words live in a language table and link to a meaning group; words of the
+// same group in different languages are mutual translations (1:1 by meaning).
+// The editor picks a language (or "auto") and gets prefix suggestions from
+// that language, with the group's other languages shown alongside.
 
 /// Single words or short phrases; longer input is rejected rather than
 /// truncated so suggestion rows stay compact.
 pub const DICT_FIELD_MAX_CHARS: usize = 64;
 
-/// One row of the `dict` table.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DictEntry {
-    pub id: i64,
-    #[serde(default)]
-    pub zh_cn: String,
-    #[serde(default)]
-    pub zh_tw: String,
-    #[serde(default)]
-    pub ja: String,
-    #[serde(default)]
-    pub en: String,
+/// `^[a-z][a-z0-9_]{0,15}$` — language code (stored in dict_lang.code).
+pub fn valid_lang_code(c: &str) -> bool {
+    let b = c.as_bytes();
+    !b.is_empty()
+        && b.len() <= 16
+        && b[0].is_ascii_lowercase()
+        && b[1..].iter().all(|x| x.is_ascii_lowercase() || x.is_ascii_digit() || *x == b'_')
 }
 
-/// GET /api/dict/lookup response.
+/// One language of the dictionary (a row of dict_lang).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DictLang {
+    pub code: String,
+    pub name: String,
+    /// short badge shown on suggestion rows (e.g. 简/繁/日/英)
+    pub badge: String,
+}
+
+/// GET /api/dict/langs response — the frontend's language selector options.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DictLangList {
+    pub langs: Vec<DictLang>,
+}
+
+/// One suggested word plus its translations (the other words of its group).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DictWordItem {
+    pub id: i64,
+    pub group_id: i64,
+    /// language code of `word`
+    pub lang: String,
+    pub word: String,
+    /// lang code → word, excluding `word` itself
+    pub trans: std::collections::BTreeMap<String, String>,
+}
+
+/// GET /api/dict/lookup response. `lang` selects the language to search in
+/// (empty = any language, exact matches first then prefix).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DictLookupResponse {
-    /// Exact matches first (any language column equals the query), then
-    /// prefix completions, capped server-side.
-    pub entries: Vec<DictEntry>,
+    pub words: Vec<DictWordItem>,
 }
 
-/// POST/PUT /api/dict request body (admin only).
+/// POST /api/dict/langs request body (admin only).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DictLangUpsert {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub badge: String,
+}
+
+/// POST/PUT /api/dict/words request body (admin only). `group_id` links the
+/// word to an existing meaning group; omitted creates a new group. `trans`
+/// adds/ensures sibling translations of the same group in one call.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct DictUpsertRequest {
+pub struct DictWordUpsert {
+    /// language code of `word`
     #[serde(default)]
-    pub zh_cn: String,
+    pub lang: String,
     #[serde(default)]
-    pub zh_tw: String,
+    pub word: String,
     #[serde(default)]
-    pub ja: String,
+    pub group_id: Option<i64>,
     #[serde(default)]
-    pub en: String,
+    pub trans: std::collections::BTreeMap<String, String>,
 }
 
-impl DictUpsertRequest {
-    /// Trim the four fields; `None` when any field exceeds
-    /// DICT_FIELD_MAX_CHARS or all four end up empty (a row with no word at
-    /// all would be invisible to every lookup).
-    pub fn cleaned(&self) -> Option<(String, String, String, String)> {
-        let fields = [&self.zh_cn, &self.zh_tw, &self.ja, &self.en];
-        if fields
-            .iter()
-            .any(|f| f.chars().count() > DICT_FIELD_MAX_CHARS)
-        {
-            return None;
-        }
-        let cleaned: Vec<String> = fields
-            .iter()
-            .map(|f| f.trim().chars().take(DICT_FIELD_MAX_CHARS).collect())
-            .collect();
-        if cleaned.iter().all(|f| f.is_empty()) {
-            return None;
-        }
-        Some((
-            cleaned[0].clone(),
-            cleaned[1].clone(),
-            cleaned[2].clone(),
-            cleaned[3].clone(),
-        ))
+/// Trim and bound-check one dictionary text field.
+pub fn clean_dict_field(s: &str) -> Option<String> {
+    if s.chars().count() > DICT_FIELD_MAX_CHARS {
+        return None;
     }
+    Some(s.trim().chars().take(DICT_FIELD_MAX_CHARS).collect())
 }

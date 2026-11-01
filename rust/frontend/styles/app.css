@@ -713,6 +713,34 @@ header a:hover {
 }
 
 /* ---- dictionary word suggestions ---- */
+.suggest-langs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px 4px 5px;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 2px;
+}
+.suggest-chip {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 0 7px;
+  border: 1px solid #e2e2e2;
+  border-radius: 999px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+}
+.suggest-chip:hover {
+  border-color: #c9d4e0;
+  color: #476582;
+}
+.suggest-chip.active {
+  background: #eef2f7;
+  border-color: #cfd9e4;
+  color: #476582;
+}
 .suggest-panel {
   position: fixed;
   z-index: 200;
@@ -971,6 +999,22 @@ header a:hover {
     background: #23272e;
     border-color: #333;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+  }
+  .suggest-langs {
+    border-bottom-color: #333;
+  }
+  .suggest-chip {
+    border-color: #3a4048;
+    color: #8a919c;
+  }
+  .suggest-chip:hover {
+    border-color: #4a5560;
+    color: #c8d4e0;
+  }
+  .suggest-chip.active {
+    background: #2d333b;
+    border-color: #4a5560;
+    color: #c8d4e0;
   }
   .suggest-item {
     color: #ddd;

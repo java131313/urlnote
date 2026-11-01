@@ -73,20 +73,40 @@ CREATE TABLE IF NOT EXISTS notes_mark (
 	updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 四语对照词典:同一行的 zh_cn / zh_tw / ja / en 是相同意思的词,一一对应。
--- 编辑器输入时匹配任意一个字段(精确或前缀),即提示该行另外几种语言的词。
--- 某个语言暂缺译词时该字段留空,匹配与提示自动跳过空字段。
-CREATE TABLE IF NOT EXISTS dict (
+-- 四语词典:「语言表 + 词义组 + 词表」结构。
+--   dict_lang   语言类型(code 唯一,含角标),可继续扩充
+--   dict_group  词义组(同组不同语言的词互为译词,一一对应)
+--   dict_word   提示词,关联语言与词义组;同一语言下每个词只归属一个组,
+--               保证 词→译词 映射无歧义
+CREATE TABLE IF NOT EXISTS dict_lang (
+	id    INTEGER PRIMARY KEY AUTOINCREMENT,
+	code  TEXT NOT NULL UNIQUE,
+	name  TEXT NOT NULL DEFAULT '',
+	badge TEXT NOT NULL DEFAULT '',
+	ord   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS dict_group (
 	id         INTEGER PRIMARY KEY AUTOINCREMENT,
-	zh_cn      TEXT NOT NULL DEFAULT '',
-	zh_tw      TEXT NOT NULL DEFAULT '',
-	ja         TEXT NOT NULL DEFAULT '',
-	en         TEXT NOT NULL DEFAULT '',
+	key        TEXT UNIQUE,
 	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 输入查询按各语言列做前缀匹配(LIKE '词%'),每列一个索引
-CREATE INDEX IF NOT EXISTS idx_dict_zh_cn ON dict(zh_cn);
-CREATE INDEX IF NOT EXISTS idx_dict_zh_tw ON dict(zh_tw);
-CREATE INDEX IF NOT EXISTS idx_dict_ja ON dict(ja);
-CREATE INDEX IF NOT EXISTS idx_dict_en ON dict(en);
+CREATE TABLE IF NOT EXISTS dict_word (
+	id         INTEGER PRIMARY KEY AUTOINCREMENT,
+	group_id   INTEGER NOT NULL REFERENCES dict_group(id),
+	lang_id    INTEGER NOT NULL REFERENCES dict_lang(id),
+	word       TEXT NOT NULL,
+	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dict_word_lang_word ON dict_word(lang_id, word);
+CREATE INDEX IF NOT EXISTS idx_dict_word_group ON dict_word(group_id);
+CREATE INDEX IF NOT EXISTS idx_dict_word_prefix ON dict_word(word);
+
+-- 内置四种语言
+INSERT OR IGNORE INTO dict_lang (code, name, badge, ord) VALUES
+	('zh_cn', '简体中文', '简', 1),
+	('zh_tw', '繁體中文', '繁', 2),
+	('ja',    '日本語',   '日', 3),
+	('en',    'English',  '英', 4);

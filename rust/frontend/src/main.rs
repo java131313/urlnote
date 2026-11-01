@@ -2487,8 +2487,8 @@ fn App() -> impl IntoView {
         });
     }
 
-    // dictionary suggestion word lists: fetch in the background
-    suggest::preload();
+    // dictionary suggestion word lists + languages: fetch in the background
+    suggest::preload(ctx.suggest);
 
     // keep the editor theme in sync with the OS appearance
     {

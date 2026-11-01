@@ -1107,9 +1107,8 @@ pub fn OssView() -> impl IntoView {
         ));
     });
 
-    // suggestion word lists: fetch in the background (shared with the note
-    // editor — a no-op when already loaded)
-    crate::suggest::preload();
+    // suggestion word lists + languages: fetch in the background
+    crate::suggest::preload(ctx.suggest);
 
     // first tree load
     Effect::new(move |_| {
