@@ -135,9 +135,6 @@ struct AppState {
     /// Vditor fires input asynchronously after set_value; ignore those so
     /// remote applies / mode switches don't leave phantom dirty state
     suppress_input_until_ms: f64,
-    /// content last pushed into the editor programmatically — an input event
-    /// whose value equals this is an echo, not a user edit
-    last_applied_content: String,
     /// signal values captured at load/apply time; the dirty-watching Effect
     /// only fires when the user actually changes one of them
     baseline_font: i64,
@@ -502,7 +499,6 @@ impl Ctx {
             st.loaded = true;
             // Vditor emits input shortly after set_value — ignore it
             st.suppress_input_until_ms = js_sys::Date::now() + 400.0;
-            st.last_applied_content = d.content.clone();
             st.baseline_font = resolve_font_size(d.font_size as f64);
             st.baseline_color = if valid_color(&d.color) { d.color.clone() } else { String::new() };
             st.baseline_title = d.title.clone();
@@ -643,7 +639,6 @@ impl Ctx {
             c.state.update_value(|st| {
                 st.loaded = true;
                 st.suppress_input_until_ms = js_sys::Date::now() + 600.0;
-                st.last_applied_content = d.content.clone();
                 st.baseline_font = resolve_font_size(d.font_size as f64);
                 st.baseline_color = if valid_color(&d.color) { d.color.clone() } else { String::new() };
                 st.baseline_title = d.title.clone();
@@ -783,20 +778,11 @@ impl Ctx {
             {
                 return;
             }
-            let echo = c.state.with_value(|st| {
-                st.editor
-                    .as_ref()
-                    .map(|e| {
-                        // compare in storage form: the editor may hold
-                        // absolute /i/ URLs on cross-origin deployments
-                        storage_md(&e.editor.get_value()).trim_end()
-                            == st.last_applied_content.trim_end()
-                    })
-                    .unwrap_or(false)
-            });
-            if echo {
-                return;
-            }
+            // NOTE: no content-equality echo check here — after the poll
+            // applies a save, retyping the same text must count as an edit
+            // (it would be swallowed as an "echo" and kill suggestions).
+            // The suppress_input_until_ms window already covers the async
+            // input Vditor emits right after set_value.
             c.mark_dirty();
             c.suggest
                 .update(c.can_edit.get() && !c.state.with_value(|st| st.applying_remote));
@@ -1120,7 +1106,6 @@ impl Ctx {
             c.state.update_value(|st| {
                 st.dirty = false;
                 st.poll_updated_at = String::new();
-                st.last_applied_content = info.content.clone();
             });
             c.mark_mode.set(true);
             c.set_status("正在编辑标记文档(保存只写入 notes_mark)", "saved");
@@ -2286,7 +2271,6 @@ fn App() -> impl IntoView {
             pos_tokens_cache: Vec::new(),
             find_ranges_cache: Vec::new(),
             suppress_input_until_ms: 0.0,
-            last_applied_content: String::new(),
             baseline_font: 0,
             baseline_color: String::new(),
             baseline_title: String::new(),

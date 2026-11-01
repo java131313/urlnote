@@ -1119,7 +1119,7 @@ async fn group_translations(
     );
     let mut binds: Vec<JsValue> = Vec::with_capacity(group_ids.len());
     for id in group_ids {
-        binds.push(JsValue::from(*id));
+        binds.push(JsValue::from(*id as f64));
     }
     db.prepare(&sql).bind(&binds)?.all().await?.results::<DictTransRow>()
 }
@@ -1199,7 +1199,7 @@ async fn dict_lookup(req: &Request, env: &Env) -> Result<Response> {
             JsValue::from(lang),
             JsValue::from(like_pattern(q)),
             JsValue::from(q),
-            JsValue::from(DICT_LOOKUP_LIMIT as i64),
+            JsValue::from(DICT_LOOKUP_LIMIT as f64),
         ])?
         .all()
         .await?
@@ -1263,7 +1263,7 @@ async fn group_exists(db: &D1Database, id: i64) -> Result<bool> {
     }
     Ok(db
         .prepare("SELECT id FROM dict_group WHERE id = ?1 LIMIT 1")
-        .bind(&[JsValue::from(id)])?
+        .bind(&[JsValue::from(id as f64)])?
         .first::<GroupIdRow>(None)
         .await?
         .is_some())
@@ -1388,11 +1388,11 @@ async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
     db.prepare(
         "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word) VALUES (?1, ?2, ?3)",
     )
-    .bind(&[JsValue::from(group_id), JsValue::from(lang_id), JsValue::from(word.clone())])?
+    .bind(&[JsValue::from(group_id as f64), JsValue::from(lang_id as f64), JsValue::from(word.clone())])?
     .run()
     .await?;
     db.prepare("UPDATE dict_word SET group_id = ?1 WHERE lang_id = ?2 AND word = ?3")
-        .bind(&[JsValue::from(group_id), JsValue::from(lang_id), JsValue::from(word.clone())])?
+        .bind(&[JsValue::from(group_id as f64), JsValue::from(lang_id as f64), JsValue::from(word.clone())])?
         .run()
         .await?;
 
@@ -1408,7 +1408,7 @@ async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
             "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word)
              SELECT ?1, l.id, ?2 FROM dict_lang l WHERE l.code = ?3",
         )
-        .bind(&[JsValue::from(group_id), JsValue::from(w), JsValue::from(code.clone())])?
+        .bind(&[JsValue::from(group_id as f64), JsValue::from(w), JsValue::from(code.clone())])?
         .run()
         .await?;
     }
@@ -1419,7 +1419,7 @@ async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
              FROM dict_word w JOIN dict_lang l ON l.id = w.lang_id
              WHERE w.lang_id = ?1 AND w.word = ?2 LIMIT 1",
         )
-        .bind(&[JsValue::from(lang_id), JsValue::from(word)])?
+        .bind(&[JsValue::from(lang_id as f64), JsValue::from(word)])?
         .first::<DictWordRow>(None)
         .await?;
     let Some(row) = row else {
@@ -1448,7 +1448,7 @@ async fn update_word(mut req: Request, env: &Env, id: &str) -> Result<Response> 
     let db = env.d1("DB")?;
     if let Some(word) = clean_dict_field(&body.word).filter(|s| !s.is_empty()) {
         db.prepare("UPDATE dict_word SET word = ?1 WHERE id = ?2")
-            .bind(&[JsValue::from(word), JsValue::from(id)])?
+            .bind(&[JsValue::from(word), JsValue::from(id as f64)])?
             .run()
             .await?;
     }
@@ -1457,7 +1457,7 @@ async fn update_word(mut req: Request, env: &Env, id: &str) -> Result<Response> 
             return json_error(400, "unknown group");
         }
         db.prepare("UPDATE dict_word SET group_id = ?1 WHERE id = ?2")
-            .bind(&[JsValue::from(g), JsValue::from(id)])?
+            .bind(&[JsValue::from(g as f64), JsValue::from(id as f64)])?
             .run()
             .await?;
     }
@@ -1476,7 +1476,7 @@ async fn delete_word(req: &Request, env: &Env, id: &str) -> Result<Response> {
     };
     let db = env.d1("DB")?;
     db.prepare("DELETE FROM dict_word WHERE id = ?1")
-        .bind(&[JsValue::from(id)])?
+        .bind(&[JsValue::from(id as f64)])?
         .run()
         .await?;
     sweep_empty_groups(&db).await?;
