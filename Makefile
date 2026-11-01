@@ -1,9 +1,4 @@
-# Some shells export a stale GOROOT pointing at a different Go version than
-# the `go` binary on PATH, which breaks the toolchain — always use the
-# go binary's built-in GOROOT.
-unexport GOROOT
-
-.PHONY: build build-go frontend wasm dev deploy create-db init-db init-db-local clean
+.PHONY: build dev deploy create-db init-db init-db-local clean
 
 # ---------------------------------------------------------------------------
 # Rust pipeline (default) — this is what wrangler dev/deploy builds:
@@ -48,23 +43,6 @@ rust-frontend:
 
 rust-worker:
 	cd rust/worker && worker-build --release
-
-# ---------------------------------------------------------------------------
-# Go pipeline (kept for reference / rollback — see "Rollback" in README.md).
-# Requires temporarily pointing wrangler.toml back at ./build/worker.mjs and
-# the ./frontend/dist assets directory.
-# ---------------------------------------------------------------------------
-
-build-go: frontend
-	go run github.com/syumai/workers-go/cmd/workers-assets-gen -mode=go
-	GOOS=js GOARCH=wasm go build -trimpath -o ./build/app.wasm .
-
-frontend:
-	npm --prefix frontend ci
-	rm -rf frontend/public/vditor
-	mkdir -p frontend/public/vditor
-	cp -R frontend/node_modules/vditor/dist frontend/public/vditor/dist
-	npm --prefix frontend run build
 
 dev:
 	npx wrangler dev
