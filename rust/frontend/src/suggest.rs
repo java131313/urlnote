@@ -127,6 +127,16 @@ impl Suggest {
             self.close();
             return;
         }
+        // 光标必须在编辑器内容区内才提示:点文件树/工具栏/标题输入框等
+        // 处也会触发 selectionchange,否则浮层面板会盖在无关文字上方
+        let in_editor = node
+            .parent_element()
+            .and_then(|el| el.closest(".vditor-content").ok().flatten())
+            .is_some();
+        if !in_editor {
+            self.close();
+            return;
+        }
         let offset = sel.anchor_offset();
         let text = node.text_content().unwrap_or_default();
         let chars: Vec<char> = text.chars().collect();
