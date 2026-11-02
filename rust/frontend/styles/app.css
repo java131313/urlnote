@@ -713,6 +713,17 @@ header a:hover {
 }
 
 /* ---- dictionary word suggestions ---- */
+.lang-select {
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 4px;
+  border: 1px solid #e2e2e2;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  cursor: pointer;
+}
+
 .suggest-langs {
   display: flex;
   flex-wrap: wrap;

@@ -3099,6 +3099,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                         }
                     }
                 />
+                <suggest::LangSelect sug=ctx.suggest/>
                 <button
                     type="button"
                     class="tool"

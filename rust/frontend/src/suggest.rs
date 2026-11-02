@@ -19,6 +19,7 @@ use leptos::task::spawn_local;
 use send_wrapper::SendWrapper;
 use shared::{valid_lang_code, DictLang, DictLookupResponse, DictWordItem};
 use std::cell::RefCell;
+use wasm_bindgen::JsCast;
 use web_sys::RequestCredentials;
 
 #[derive(Clone)]
@@ -335,6 +336,38 @@ pub fn SuggestPanel(sug: Suggest, insert: Callback<String>) -> impl IntoView {
                 />
             </div>
         </Show>
+    }
+}
+
+/// Persistent language dropdown for the editor toolbar: chooses the
+/// language queried by /api/dict/lookup (`lang=`), same state as the
+/// panel chips. Defaults to the build-time SUGGEST_LANG (e.g. zh_cn).
+#[component]
+pub fn LangSelect(sug: Suggest) -> impl IntoView {
+    view! {
+        <select
+            class="lang-select"
+            title="提示语言(决定 lang= 参数)"
+            prop:value=move || sug.selected_lang()
+            on:change=move |e| {
+                let v = e
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::HtmlSelectElement>().ok())
+                    .map(|el| el.value())
+                    .unwrap_or_default();
+                sug.set_lang(&v);
+            }
+        >
+            <option value="">"自动"</option>
+            <For
+                each=move || sug.langs.get()
+                key=|l| l.code.clone()
+                children=move |l: DictLang| {
+                    let code = l.code.clone();
+                    view! { <option value=code>{l.name}</option> }
+                }
+            />
+        </select>
     }
 }
 

@@ -10,7 +10,7 @@
 //! Fine for personal use; if that ever matters, move signing behind the
 //! CF worker (this module keeps it in one place on purpose).
 
-use crate::suggest::{Suggest, SuggestPanel};
+use crate::suggest::{LangSelect, Suggest, SuggestPanel};
 use crate::vditor::VditorEditor;
 use crate::{current_time, document, window, BASE_PATH};
 use shared::{valid_color, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
@@ -1277,6 +1277,7 @@ pub fn OssView() -> impl IntoView {
                         }}
                         <span class="oss-spacer"></span>
                         <Show when=move || ctx.current.get().is_some()>
+                            <LangSelect sug=ctx.suggest/>
                             <button
                                 type="button"
                                 class="tool"
