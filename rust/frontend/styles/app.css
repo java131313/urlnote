@@ -1341,6 +1341,39 @@ header a:hover {
   color: #999;
 }
 
+/* 正文里的批注锚点(覆盖层,不进 markdown) */
+.comment-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.comment-anchor {
+  position: absolute;
+  pointer-events: auto;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 3px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  opacity: 0.75;
+  user-select: none;
+}
+.comment-anchor:hover {
+  opacity: 1;
+  transform: scale(1.15);
+}
+
+/* 批注条目被锚点定位时的闪烁 */
+.comment-item[data-flash="1"] {
+  animation: comment-item-flash 1.6s ease-out;
+}
+@keyframes comment-item-flash {
+  0% { background: rgba(255, 200, 60, 0.55); }
+  100% { background: transparent; }
+}
+
 /* 批注跳转后的闪烁高亮 */
 .comment-flash {
   position: fixed;

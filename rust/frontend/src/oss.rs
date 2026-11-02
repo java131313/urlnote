@@ -951,6 +951,7 @@ fn open_file(key: String, name: String) {
                 ctx.current_name.set(name.clone());
                 ctx.dirty.set(false);
                 reset_settings(&ctx);
+                ctx.comments.set_context(&format!("oss/{key}"));
                 if let Some(doc) = window().document() {
                     doc.set_title(&format!("{name} · 文件库"));
                 }
@@ -1302,6 +1303,7 @@ pub fn OssView() -> impl IntoView {
             let d = ctx.dirty;
             let sup = ctx.suppress;
             let sug = ctx.suggest;
+            let comments = ctx.comments;
             let cb = Closure::<dyn FnMut()>::new(move || {
                 // Vditor fires input asynchronously right after set_value —
                 // that echo is not a user edit
@@ -1311,6 +1313,7 @@ pub fn OssView() -> impl IntoView {
                 }
                 d.set(true);
                 sug.update(true);
+                comments.schedule_draw();
             });
             if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb, ctx) {
                 ctx.status.set(e);
@@ -1357,8 +1360,10 @@ pub fn OssView() -> impl IntoView {
     // suggestion word lists + languages: fetch in the background
     crate::suggest::preload(ctx.suggest);
 
-    // 批注的状态提示接入状态栏
+    // 批注:状态提示、锚点根、本页 ctl 注册
     comment::set_hint_handler(move |m| ctx.status.set(m.to_string()));
+    ctx.comments.set_root(".oss-editor .vditor-content");
+    comment::register_ctl(ctx.comments);
 
     // first tree load
     Effect::new(move |_| {

@@ -800,6 +800,7 @@ impl Ctx {
             c.mark_dirty();
             c.suggest
                 .update(c.can_edit.get() && !c.state.with_value(|st| st.applying_remote));
+            c.comments.schedule_draw();
             c.schedule_pos_refresh(false);
             if c.find_open.get() && !c.find_query.with(|q| q.trim().is_empty()) {
                 let c2 = c;
@@ -2488,10 +2489,12 @@ fn App() -> impl IntoView {
 
     // dictionary suggestion word lists + languages: fetch in the background
     suggest::preload(ctx.suggest);
-    // 批注的状态提示接入状态栏
+    // 批注:状态提示、锚点根、本页 ctl 注册
     {
         let ctx = ctx;
         comment::set_hint_handler(move |m| ctx.set_status(m, "error"));
+        ctx.comments.set_root(".editor .vditor-content");
+        comment::register_ctl(ctx.comments);
     }
 
     // keep the editor theme in sync with the OS appearance

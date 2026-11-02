@@ -19,6 +19,15 @@ pub struct CommentCtl {
     items: RwSignal<Vec<CommentItem>>,
     open: RwSignal<bool>,
     busy: RwSignal<bool>,
+    /// 编辑器内容根选择器(绘制锚点/定位用)
+    root: RwSignal<String>,
+    /// 当前上下文文档(未开面板时锚点也跟随它)
+    context_doc: RwSignal<String>,
+}
+
+thread_local! {
+    static DRAW_TIMER: std::cell::RefCell<Option<gloo_timers::callback::Timeout>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl CommentCtl {
@@ -28,7 +37,47 @@ impl CommentCtl {
             items: RwSignal::new(Vec::new()),
             open: RwSignal::new(false),
             busy: RwSignal::new(false),
+            root: RwSignal::new(String::new()),
+            context_doc: RwSignal::new(String::new()),
         }
+    }
+
+    pub fn set_root(&self, root: &str) {
+        self.root.set(root.to_string());
+    }
+
+    /// 页面切换文档(打开便签/文件)时同步:加载批注并重绘锚点
+    pub fn set_context(&self, doc: &str) {
+        if self.context_doc.get() == doc {
+            return;
+        }
+        self.context_doc.set(doc.to_string());
+        if !self.open.get() {
+            self.doc.set(doc.to_string());
+            self.refresh();
+        }
+        self.schedule_draw();
+    }
+
+    fn active_doc(&self) -> String {
+        if self.open.get() {
+            self.doc.get()
+        } else {
+            self.context_doc.get()
+        }
+    }
+
+    /// 防抖重绘锚点(编辑器输入/滚动后 DOM 变了)
+    pub fn schedule_draw(&self) {
+        let c = *self;
+        DRAW_TIMER.with(|t| {
+            if let Some(old) = t.borrow_mut().take() {
+                old.cancel();
+            }
+            *t.borrow_mut() = Some(gloo_timers::callback::Timeout::new(350, move || {
+                c.draw_anchors();
+            }));
+        });
     }
 
     pub fn is_open(&self) -> bool {
@@ -74,6 +123,7 @@ impl CommentCtl {
             if resp.ok() {
                 if let Ok(list) = resp.json::<CommentList>().await {
                     c.items.set(list.comments);
+                    c.schedule_draw();
                 }
             }
         });
@@ -244,6 +294,53 @@ fn selection_span(content_root: &str) -> Option<(String, usize, usize)> {
     Some((quote, start, end))
 }
 
+/// 按引用文本在编辑器里定位:取离 hint 最近的出现处,返回 DOM Range
+/// (起点/终点分别落在各自所在文本节点,支持跨格式引文)
+fn place_range(
+    root: &web_sys::Element,
+    nodes: &[(web_sys::Node, String, usize)],
+    full_chars: &[char],
+    quote: &str,
+    hint: usize,
+) -> Option<web_sys::Range> {
+    let needle: Vec<char> = quote.chars().collect();
+    if needle.is_empty() || needle.len() > full_chars.len() {
+        return None;
+    }
+    let mut occ = Vec::new();
+    for i in 0..=(full_chars.len() - needle.len()) {
+        if full_chars[i..i + needle.len()] == needle[..] {
+            occ.push(i);
+        }
+        if occ.len() >= 200 {
+            break;
+        }
+    }
+    let start = *occ.iter().min_by_key(|&&i| i.abs_diff(hint))?;
+    let end = start + needle.len();
+    let mut start_loc = None;
+    let mut end_loc = None;
+    for (node, text, base) in nodes {
+        let n = text.chars().count();
+        if start_loc.is_none() && start >= *base && (start < *base + n || (start == *base && n == 0)) {
+            start_loc = Some((node, start - *base, text));
+        }
+        if end_loc.is_none() && end > *base && end <= *base + n {
+            end_loc = Some((node, end - *base, text));
+        }
+    }
+    let (sn, so, st) = start_loc?;
+    let (en, eo, et) = end_loc?;
+    let u16s: u32 = st.chars().take(so).map(|c| c.len_utf16() as u32).sum();
+    let u16e: u32 = et.chars().take(eo).map(|c| c.len_utf16() as u32).sum();
+    let range = web_sys::Range::new().ok()?;
+    if range.set_start(sn, u16s).is_ok() && range.set_end(en, u16e).is_ok() {
+        Some(range)
+    } else {
+        None
+    }
+}
+
 /// 按引用文本重定位并选中(取离 hint 最近的出现处)
 fn select_quote(content_root: &str, quote: &str, hint: usize) {
     if quote.is_empty() {
@@ -258,64 +355,169 @@ fn select_quote(content_root: &str, quote: &str, hint: usize) {
     };
     let Some((nodes, full)) = collect_nodes(&root) else { return };
     let chars: Vec<char> = full.chars().collect();
-    let needle: Vec<char> = quote.chars().collect();
-    if needle.is_empty() || needle.len() > chars.len() {
-        return;
-    }
-    // 所有出现位置
-    let mut occ = Vec::new();
-    for i in 0..=(chars.len() - needle.len()) {
-        if chars[i..i + needle.len()] == needle[..] {
-            occ.push(i);
-        }
-        if occ.len() >= 200 {
-            break;
-        }
-    }
-    if occ.is_empty() {
+    let Some(range) = place_range(&root, &nodes, &chars, quote, hint) else {
         set_status_hint("原文已变化,找不到锚定文字");
         return;
+    };
+    if let Some(sel) = window().get_selection().ok().flatten() {
+        sel.remove_all_ranges().ok();
+        sel.add_range(&range).ok();
     }
-    let start = *occ
-        .iter()
-        .min_by_key(|&&i| i.abs_diff(hint))
-        .unwrap_or(&occ[0]);
-    let end = start + needle.len();
-    // 字符范围 → DOM Range:起点与终点分别落在各自所在的文本节点
-    // (支持跨节点/跨格式的引文),偏移按 UTF-16 前缀和换算
-    let Some(sel) = window().get_selection().ok().flatten() else { return };
-    let Ok(range) = web_sys::Range::new() else { return };
-    let mut start_loc = None;
-    let mut end_loc = None;
-    for (node, text, base) in &nodes {
-        let n = text.chars().count();
-        if start_loc.is_none() && start >= *base && (start < *base + n || (start == *base && n == 0)) {
-            start_loc = Some((node, start - *base, text));
+    let rect = range.get_bounding_client_rect();
+    // 编辑器内容区滚动到选中处(编辑器自身是滚动容器)
+    if let Ok(Some(content)) = root.closest(".vditor-content") {
+        let shift = rect.top() - 120.0;
+        let next = (content.scroll_top() as f64 + shift).max(0.0);
+        content.set_scroll_top(next as i32);
+    }
+    flash_rect(&rect);
+}
+
+// ---- 正文锚点(覆盖层,不进 markdown) ----
+
+thread_local! {
+    static LAYER_WIRED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+impl CommentCtl {
+    /// 在编辑器里绘制批注锚点(💬 覆盖在引文末尾,点击定位侧栏条目)
+    fn draw_anchors(&self) {
+        let doc = self.active_doc();
+        let root_sel = self.root.get();
+        let Some(root) = document().query_selector(&root_sel).ok().flatten() else { return };
+        let Some(content) = root.closest(".vditor-content").ok().flatten() else { return };
+        // 层:绝对定位在内容滚动容器内,随滚动自然移动
+        let layer = match content.query_selector(".comment-layer").ok().flatten() {
+            Some(l) => l,
+            None => {
+                let Ok(l) = document().create_element("div") else { return };
+                l.set_class_name("comment-layer");
+                let _ = content.append_child(&l);
+                wire_layer_clicks(&l);
+                l
+            }
+        };
+        layer.set_inner_html("");
+        if doc.is_empty() {
+            return;
         }
-        if end_loc.is_none() && end > *base && end <= *base + n {
-            end_loc = Some((node, end - *base, text));
+        let items = self.items.get();
+        if items.is_empty() {
+            return;
+        }
+        let Some((nodes, full)) = collect_nodes(&root) else { return };
+        let chars: Vec<char> = full.chars().collect();
+        let content_rect = content.get_bounding_client_rect();
+        let st = content.scroll_top() as f64;
+        let sl = content.scroll_left() as f64;
+        let mut drawn = 0usize;
+        for item in &items {
+            if item.quote.is_empty() {
+                continue;
+            }
+            let Some(range) = place_range(&root, &nodes, &chars, &item.quote, item.start) else { continue };
+            let rect = range.get_bounding_client_rect();
+            if rect.width() <= 0.0 && rect.height() <= 0.0 {
+                continue;
+            }
+            let Ok(chip) = document().create_element("span") else { continue };
+            chip.set_class_name("comment-anchor");
+            let _ = chip.set_attribute("data-cid", &item.id);
+            let top = rect.bottom() - content_rect.top() + st - 4.0;
+            let left = rect.right() - content_rect.left() + sl + 2.0;
+            let _ = chip.set_attribute(
+                "style",
+                &format!("top:{top:.0}px;left:{left:.0}px;z-index:{}", 10 + drawn % 5),
+            );
+            chip.set_text_content(Some("💬"));
+            let _ = layer.append_child(&chip);
+            drawn += 1;
+        }
+        // 内容滚动时重绘(保持锚点跟随)
+        if !LAYER_WIRED.with(|w| w.get()) {
+            LAYER_WIRED.with(|w| w.set(true));
+            let c = *self;
+            let listener = gloo_events::EventListener::new(&content, "scroll", move |_| {
+                c.schedule_draw();
+            });
+            // 页面级存活:泄漏进 thread_local(每页一个编辑器)
+            ANCHOR_LISTENERS.with(|l| l.borrow_mut().push(listener));
         }
     }
-    let mut placed = false;
-    if let (Some((sn, so, st)), Some((en, eo, et))) = (start_loc, end_loc) {
-        let u16s: u32 = st.chars().take(so).map(|c| c.len_utf16() as u32).sum();
-        let u16e: u32 = et.chars().take(eo).map(|c| c.len_utf16() as u32).sum();
-        if range.set_start(sn, u16s).is_ok() && range.set_end(en, u16e).is_ok() {
-            sel.remove_all_ranges().ok();
-            sel.add_range(&range).ok();
-            placed = true;
+
+    /// 点击正文锚点:侧栏打开/滚动到对应条目并闪烁
+    pub fn focus_item(&self, cid: &str) {
+        let doc = self.active_doc();
+        if !self.open.get() {
+            self.doc.set(doc.clone());
+            self.open.set(true);
+            self.refresh();
         }
-    }
-    if placed {
-        let rect = range.get_bounding_client_rect();
-        // 编辑器内容区滚动到选中处(编辑器自身是滚动容器)
-        if let Ok(Some(content)) = root.closest(".vditor-content") {
-            let shift = rect.top() - 120.0;
-            let next = (content.scroll_top() as f64 + shift).max(0.0);
-            content.set_scroll_top(next as i32);
+        let items = self.items.get();
+        if !items.iter().any(|i| i.id == cid) {
+            // 面板数据可能还没加载完,稍后重试一次
+            let c = *self;
+            let cid = cid.to_string();
+            leptos::task::spawn_local(async move {
+                gloo_timers::future::sleep(std::time::Duration::from_millis(400)).await;
+                c.flash_item(&cid);
+            });
+            return;
         }
-        flash_rect(&rect);
+        self.flash_item(cid);
     }
+
+    fn flash_item(&self, cid: &str) {
+        let Some(doc) = window().document() else { return };
+        let sel = format!(".comment-item[data-cid='{cid}']");
+        let Some(el) = doc.query_selector(&sel).ok().flatten() else { return };
+        let _ = el.set_attribute("data-flash", "1");
+        let _ = el.scroll_into_view_with_bool(false);
+        let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+            let _ = el.remove_attribute("data-flash");
+        });
+        let _ = window()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                1600,
+            )
+            .map(|_| cb.forget());
+    }
+}
+
+thread_local! {
+    static ANCHOR_LISTENERS: std::cell::RefCell<Vec<gloo_events::EventListener>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 锚点层上的委托点击:💬 → 对应批注条目
+fn wire_layer_clicks(layer: &web_sys::Element) {
+    let listener = gloo_events::EventListener::new(layer, "click", |e| {
+        let target = e.target();
+        let el = target
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+            .and_then(|el| el.closest("[data-cid]").ok().flatten());
+        if let Some(el) = el {
+            if let Some(cid) = el.get_attribute("data-cid") {
+                // 找到本页的 ctl:两个页面各自唯一,从全局槽取
+                CTL.with(|c| {
+                    if let Some(ctl) = c.borrow().as_ref() {
+                        ctl.focus_item(&cid);
+                    }
+                });
+            }
+        }
+    });
+    ANCHOR_LISTENERS.with(|l| l.borrow_mut().push(listener));
+}
+
+thread_local! {
+    static CTL: std::cell::RefCell<Option<CommentCtl>> = const { std::cell::RefCell::new(None) };
+}
+
+/// 页面装配时注册本页的 ctl(锚点点击回跳用;每页唯一)
+pub fn register_ctl(ctl: CommentCtl) {
+    CTL.with(|c| *c.borrow_mut() = Some(ctl));
 }
 
 /// 跳转后的黄色闪烁标记,1.3s 后自删
