@@ -1304,6 +1304,7 @@ pub fn OssView() -> impl IntoView {
             let sup = ctx.suppress;
             let sug = ctx.suggest;
             let comments = ctx.comments;
+            let _ = comments;
             let cb = Closure::<dyn FnMut()>::new(move || {
                 // Vditor fires input asynchronously right after set_value —
                 // that echo is not a user edit
@@ -1313,7 +1314,6 @@ pub fn OssView() -> impl IntoView {
                 }
                 d.set(true);
                 sug.update(true);
-                comments.schedule_draw();
             });
             if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb, ctx) {
                 ctx.status.set(e);

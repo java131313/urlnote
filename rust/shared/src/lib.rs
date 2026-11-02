@@ -353,8 +353,12 @@ pub struct CommentList {
 }
 
 /// POST /api/comments body. `doc` is "note/<id>" or "oss/<key>".
+/// `id`(24 位 hex ObjectId)由客户端生成:批注锚点 <a id="cm-<id>"> 要先
+/// 于响应写进文档,前后端必须同一 id。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CommentUpsert {
+    #[serde(default)]
+    pub id: String,
     #[serde(default)]
     pub doc: String,
     #[serde(default)]

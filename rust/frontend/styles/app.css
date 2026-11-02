@@ -1341,28 +1341,20 @@ header a:hover {
   color: #999;
 }
 
-/* 正文里的批注锚点(覆盖层,不进 markdown) */
-.comment-layer {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-.comment-anchor {
-  position: absolute;
-  pointer-events: auto;
+/* 正文里的批注锚点:<a class="cmt"> 写在 markdown 里(批注处) */
+.vditor-reset a.cmt,
+.vditor-preview a.cmt,
+.oss-editor a.cmt {
+  color: inherit;
+  text-decoration: none;
+  background: rgba(66, 133, 244, 0.10);
+  border-bottom: 2px dotted #e0245e;
   cursor: pointer;
-  font-size: 12px;
-  line-height: 1;
-  padding: 1px 3px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.85);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
-  opacity: 0.75;
-  user-select: none;
+  border-radius: 2px;
 }
-.comment-anchor:hover {
-  opacity: 1;
-  transform: scale(1.15);
+.vditor-reset a.cmt:hover,
+.oss-editor a.cmt:hover {
+  background: rgba(66, 133, 244, 0.22);
 }
 
 /* 批注条目被锚点定位时的闪烁 */

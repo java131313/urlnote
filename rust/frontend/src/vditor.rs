@@ -46,6 +46,52 @@ window.__urlnoteFcObserver = new MutationObserver(function (muts) {
 });
 window.__urlnoteFcObserver.observe(document.body, { childList: true, subtree: true });
 
+window.__urlnoteWrapAnchor = function (cid, saved) {
+  const sel = window.getSelection();
+  let range =
+    sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : saved || null;
+  if (!range) return false;
+  const anchor = range.commonAncestorContainer;
+  const startEl = anchor.nodeType === 3 ? anchor.parentElement : anchor;
+  const wysiwyg = startEl && startEl.closest ? startEl.closest('.vditor-wysiwyg') : null;
+  if (!wysiwyg) return false;
+  const targets = [];
+  const walker = document.createTreeWalker(wysiwyg, NodeFilter.SHOW_TEXT, {
+    acceptNode: function (t) {
+      if (!t.data.trim()) return NodeFilter.FILTER_REJECT;
+      if (!range.intersectsNode(t)) return NodeFilter.FILTER_REJECT;
+      const p = t.parentElement;
+      if (!p || p.closest('code')) return NodeFilter.FILTER_REJECT;
+      // 已在批注锚点内则不重复包
+      if (p.closest('a.cmt')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  while (walker.nextNode()) targets.push(walker.currentNode);
+  let changed = false;
+  for (const t of targets) {
+    let s0 = 0, e0 = t.data.length;
+    if (t === range.startContainer) s0 = range.startOffset;
+    if (t === range.endContainer) e0 = range.endOffset;
+    if (s0 >= e0) continue;
+    const r = document.createRange();
+    r.setStart(t, s0);
+    r.setEnd(t, e0);
+    const a = document.createElement('a');
+    a.setAttribute('id', 'cm-' + cid);
+    a.setAttribute('class', 'cmt');
+    a.setAttribute('data-cmt', '1');
+    try { r.surroundContents(a); }
+    catch (e) { const f = r.extractContents(); a.appendChild(f); r.insertNode(a); }
+    changed = true;
+  }
+  if (changed) {
+    if (sel) sel.removeAllRanges();
+    window.__urlnoteSavedRange = null;
+    wysiwyg.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  }
+  return changed;
+};
 window.__urlnoteStash = function () {
   const sel = window.getSelection();
   window.__urlnoteSavedRange =
@@ -141,6 +187,46 @@ fn install_colorize() {
             d.set(true);
         }
     });
+}
+
+/// 生成 24 位 hex(与 Mongo ObjectId 同形),批注锚点 id
+pub fn new_comment_id() -> String {
+    let mut v = [0u8; 12];
+    let _ = window()
+        .crypto()
+        .expect("crypto")
+        .get_random_values_with_u8_array(&mut v);
+    let mut s = String::with_capacity(24);
+    for b in v {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// 暂存当前选区(add 批注流程在 prompt/POST 前调用,防选区丢失)
+pub fn wrap_prep_stash() {
+    install_colorize();
+    call_window0("__urlnoteStash");
+}
+
+/// 把当前选区(或暂存选区)包成 <a id="cm-<cid>" class="cmt">,写进 markdown
+pub fn wrap_selection_as_anchor(cid: &str) {
+    install_colorize();
+    let g = js_sys::global();
+    if let Ok(f) = js_sys::Reflect::get(&g, &JsValue::from_str("__urlnoteStash"))
+        .and_then(|f| f.dyn_into::<js_sys::Function>())
+    {
+        let _ = f.call0(&g);
+    }
+    if let Ok(f) = js_sys::Reflect::get(&g, &JsValue::from_str("__urlnoteWrapAnchor"))
+        .and_then(|f| f.dyn_into::<js_sys::Function>())
+    {
+        let _ = f.call1(&g, &JsValue::from_str(cid));
+    }
+}
+
+fn window() -> web_sys::Window {
+    web_sys::window().expect("window")
 }
 
 fn call_window0(name: &str) {

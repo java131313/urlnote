@@ -65,7 +65,9 @@ pub async fn create_comment(
     }
     let quote: String = body.quote.chars().take(200).collect();
     let text: String = body.text.trim().chars().take(2000).collect();
-    let id = mongodb::bson::oid::ObjectId::new();
+    // id 由客户端生成(锚点先入文档),合法则采用,否则服务端生成
+    let id = mongodb::bson::oid::ObjectId::parse_str(&body.id)
+        .unwrap_or_else(|_| mongodb::bson::oid::ObjectId::new());
     let item = CommentItem {
         id: id.to_hex(),
         doc: body.doc.clone(),

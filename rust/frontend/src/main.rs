@@ -800,7 +800,6 @@ impl Ctx {
             c.mark_dirty();
             c.suggest
                 .update(c.can_edit.get() && !c.state.with_value(|st| st.applying_remote));
-            c.comments.schedule_draw();
             c.schedule_pos_refresh(false);
             if c.find_open.get() && !c.find_query.with(|q| q.trim().is_empty()) {
                 let c2 = c;
