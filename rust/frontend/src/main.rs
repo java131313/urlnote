@@ -4,6 +4,7 @@
 //! markdown editor itself is the same JS library, driven through
 //! wasm-bindgen (see vditor.rs).
 
+mod comment;
 mod oss;
 mod suggest;
 mod vditor;
@@ -174,6 +175,8 @@ struct Ctx {
     req_message: RwSignal<String>,
     // dictionary word suggestions (shared module; panel renders in the view)
     suggest: suggest::Suggest,
+    // anchored comments (批注)
+    comments: comment::CommentCtl,
     // grammar analysis results
     analyze_open: RwSignal<bool>,
     analyze_busy: RwSignal<bool>,
@@ -771,6 +774,15 @@ impl Ctx {
         }
         // 文字颜色工具:选中文字包 <span style="color:..">,存入 markdown
         cbs.extend(vditor::add_font_color_tool(&toolbar));
+        // 批注按钮:选中文字 → 添加批注(锚定引用 + 偏移)
+        {
+            let c = *self;
+            cbs.extend(comment::add_comment_tool(&toolbar, move || {
+                let doc = format!("note/{}", c.id());
+                c.comments.ensure_open(&doc);
+                c.comments.add_from_selection(".editor .vditor-content");
+            }));
+        }
         set("toolbar", &toolbar);
 
         let c = *self;
@@ -2300,6 +2312,7 @@ fn App() -> impl IntoView {
         req_panel_open,
         req_message,
         suggest,
+        comments: comment::CommentCtl::new(),
         analyze_open,
         analyze_busy,
         analyze_issues,
@@ -2475,6 +2488,11 @@ fn App() -> impl IntoView {
 
     // dictionary suggestion word lists + languages: fetch in the background
     suggest::preload(ctx.suggest);
+    // 批注的状态提示接入状态栏
+    {
+        let ctx = ctx;
+        comment::set_hint_handler(move |m| ctx.set_status(m, "error"));
+    }
 
     // keep the editor theme in sync with the OS appearance
     {
@@ -3257,6 +3275,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                 </div>
             </Show>
             <suggest::SuggestPanel sug=suggest insert=note_suggest_insert(ctx)/>
+            <comment::CommentPanel ctl=ctx.comments content_root=".editor .vditor-content"/>
             <Show when=move || analyze_open.get()>
                 <div class="analyze-drawer" on:mousedown=|e: web_sys::MouseEvent| e.stop_propagation()>
                     <div class="analyze-head">

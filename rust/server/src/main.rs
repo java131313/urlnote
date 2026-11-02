@@ -4,6 +4,7 @@
 // when STATIC_DIR (or the default dist locations) is present.
 
 mod analyze;
+mod comments;
 mod auth;
 mod db;
 mod dict;
@@ -158,6 +159,8 @@ fn api_router(st: AppState) -> Router {
                 .delete(nlp::remove_mark)
                 .get(nlp::get_mark),
         )
+        .route("/api/comments", get(comments::list_comments).post(comments::create_comment))
+        .route("/api/comments/{id}", axum::routing::delete(comments::delete_comment))
         .route("/api/dict/lookup", get(dict::dict_lookup))
         .route("/api/dict/langs", get(dict::dict_langs).post(dict::create_lang))
         .route("/api/dict/words", get(dict::list_words).post(dict::create_word))

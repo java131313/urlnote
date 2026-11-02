@@ -10,6 +10,7 @@
 //! Fine for personal use; if that ever matters, move signing behind the
 //! CF worker (this module keeps it in one place on purpose).
 
+use crate::comment::{self, CommentCtl, CommentPanel};
 use crate::suggest::{LangSelect, Suggest, SuggestPanel};
 use crate::vditor::VditorEditor;
 use crate::{api_url, current_time, document, window, BASE_PATH};
@@ -518,8 +519,9 @@ thread_local! {
 fn init_editor(
     mount: &web_sys::Element,
     on_input: Closure<dyn FnMut()>,
-    sug: Suggest,
+    ctx: OssCtx,
 ) -> Result<(), String> {
+    let sug = ctx.suggest;
     let dark = window()
         .match_media("(prefers-color-scheme: dark)")
         .ok()
@@ -587,6 +589,17 @@ fn init_editor(
     }
     // 文字颜色工具(选中文字着色,存进 markdown)
     let mut extra = crate::vditor::add_font_color_tool(&toolbar);
+    // 批注按钮:选中文字 → 添加批注
+    {
+        let ctx2 = ctx;
+        extra.extend(comment::add_comment_tool(&toolbar, move || {
+            if let Some(key) = ctx2.current.get() {
+                let doc = format!("oss/{key}");
+                ctx2.comments.ensure_open(&doc);
+                ctx2.comments.add_from_selection(".oss-editor .vditor-content");
+            }
+        }));
+    }
     set("toolbar", &toolbar.into());
     // extra 与下方 cb/blur 一起进 cbs 保活
     let mut cbs = std::mem::take(&mut extra);
@@ -637,6 +650,8 @@ struct OssCtx {
     color: RwSignal<String>,
     /// 图片预览的 object URL(点亮浮层时 Some)
     preview_url: RwSignal<Option<String>>,
+    /// 批注(锚定文字)
+    comments: CommentCtl,
     suggest: Suggest,
 }
 
@@ -1268,6 +1283,7 @@ pub fn OssView() -> impl IntoView {
         font_size: RwSignal::new(DEFAULT_FONT_SIZE),
         color: RwSignal::new(String::new()),
         preview_url: RwSignal::new(None),
+        comments: CommentCtl::new(),
         suggest: Suggest::new(),
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
@@ -1296,7 +1312,7 @@ pub fn OssView() -> impl IntoView {
                 d.set(true);
                 sug.update(true);
             });
-            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb, sug) {
+            if let Err(e) = init_editor(el.unchecked_ref::<web_sys::Element>(), cb, ctx) {
                 ctx.status.set(e);
             }
         }
@@ -1340,6 +1356,9 @@ pub fn OssView() -> impl IntoView {
 
     // suggestion word lists + languages: fetch in the background
     crate::suggest::preload(ctx.suggest);
+
+    // 批注的状态提示接入状态栏
+    comment::set_hint_handler(move |m| ctx.status.set(m.to_string()));
 
     // first tree load
     Effect::new(move |_| {
@@ -1503,6 +1522,7 @@ pub fn OssView() -> impl IntoView {
                         }
                     ></div>
                     <SuggestPanel sug=ctx.suggest insert=insert/>
+                    <CommentPanel ctl=ctx.comments content_root=".oss-editor .vditor-content"/>
                     <Show when=move || ctx.preview_url.get().is_some()>
                         <div
                             class="oss-lightbox"

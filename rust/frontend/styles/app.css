@@ -1277,6 +1277,70 @@ header a:hover {
   min-height: 0;
 }
 
+/* ---- 批注侧栏 ---- */
+.comment-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 300px;
+  background: var(--panel-bg, #fff);
+  border-left: 1px solid #e2e2e2;
+  box-shadow: -8px 0 30px rgba(0, 0, 0, 0.12);
+  padding: 10px 12px;
+  overflow-y: auto;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.comment-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #eee;
+  padding-bottom: 6px;
+}
+.comment-hint {
+  font-size: 12px;
+  color: #999;
+}
+.comment-item {
+  border: 1px solid #ececec;
+  border-radius: 8px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.comment-quote {
+  font-size: 12px;
+  color: #476582;
+  background: #f3f6fa;
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.comment-quote:hover {
+  background: #e6edf5;
+}
+.comment-text {
+  font-size: 13px;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #999;
+}
+
 /* 图片预览浮层 */
 .oss-lightbox {
   position: fixed;

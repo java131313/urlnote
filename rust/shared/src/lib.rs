@@ -324,6 +324,59 @@ pub struct UploadData {
     pub succ_map: std::collections::BTreeMap<String, String>,
 }
 
+// ---- anchored comments (批注) ----
+
+/// One anchored comment. `quote` is the anchored text (re-located on jump),
+/// `start`/`end` are char offsets into the document's visible text (hint).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommentItem {
+    pub id: String,
+    pub doc: String,
+    #[serde(default)]
+    pub quote: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub start: usize,
+    #[serde(default)]
+    pub end: usize,
+}
+
+/// GET /api/comments?doc=... response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CommentList {
+    pub comments: Vec<CommentItem>,
+}
+
+/// POST /api/comments body. `doc` is "note/<id>" or "oss/<key>".
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CommentUpsert {
+    #[serde(default)]
+    pub doc: String,
+    #[serde(default)]
+    pub quote: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub start: usize,
+    #[serde(default)]
+    pub end: usize,
+}
+
+/// `note/<id>` or `oss/<key>`; note ids get the strict charset, oss keys are
+/// any sane path. Length-bounded either way.
+pub fn valid_doc_ref(d: &str) -> bool {
+    let Some((kind, rest)) = d.split_once('/') else { return false };
+    if rest.is_empty() || rest.len() > 300 || rest.starts_with('/') || rest.contains("..") {
+        return false;
+    }
+    matches!(kind, "note" | "oss")
+}
+
 /// GET /api/mark/{id} response — the annotated copy from notes_mark.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MarkInfo {
