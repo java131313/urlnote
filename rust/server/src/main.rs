@@ -70,6 +70,29 @@ async fn bootstrap(st: &AppState) {
 fn api_router(st: AppState) -> Router {
     let cors = if st.cors_origins.is_empty() {
         None
+    } else if st.cors_origins.iter().any(|o| o == "*") {
+        // CORS_ORIGINS=*:反射任意 Origin(等同允许所有地址)。
+        // 携带凭据时浏览器拒绝字面量 "*",只能用反射;注意这意味着任何
+        // 网站都能带用户的 cookie 调用本 API,个人自用以外慎用。
+        Some(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::predicate(|_, _| true))
+                .allow_credentials(true)
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                    axum::http::Method::HEAD,
+                ])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::ACCEPT,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::HeaderName::from_static("x-requested-with"),
+                ]),
+        )
     } else {
         let origins: Vec<axum::http::HeaderValue> = st
             .cors_origins
