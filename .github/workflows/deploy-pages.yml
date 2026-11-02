@@ -13,6 +13,7 @@
 # 注意:跨站登录要求后端走 HTTPS(SameSite=None; Secure cookie),
 #       请用 nginx/caddy 反代 :8080。
 name: deploy-frontend-to-pages
+# 推送本文件即触发重建:API_BASE 等仓库变量在构建期注入 wasm
 
 on:
   push:
