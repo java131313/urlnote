@@ -1,0 +1,65 @@
+# urlnote 自托管栈:MongoDB + 后端 + 前端(nginx),三个服务分别构建。
+#
+#   docker compose up -d          # 构建并启动
+#   docker compose logs -f server # 看后端日志
+#   docker compose run --rm server /app/urlnote-server seed   # 导入词典(幂等)
+#
+# 首次登录: admin / root@123(用 ADMIN_PASSWORD 在首次启动前覆盖)
+# 跨域:前端若改由 GitHub Pages 托管,把 Pages 地址加进 server 的
+#       CORS_ORIGINS 环境变量即可(见 .github/workflows/deploy-pages.yml)。
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "${API_PORT:-8080}:8080"
+    environment:
+      MONGODB_URI: mongodb://${MONGO_ROOT_USER:-root}:${MONGO_ROOT_PASSWORD:-changeme}@mongo:27017/?authSource=admin
+      MONGO_DB: urlnote
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-root@123}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+    networks:
+      - internal
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        # 浏览器访问后端的地址;留空 = 同源(直接访问本 compose 的 web)
+        API_BASE: ${API_BASE:-}
+        BASE_PATH: ${BASE_PATH:-}
+    restart: unless-stopped
+    depends_on:
+      - server
+    ports:
+      - "${WEB_PORT:-80}:80"
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  mongo-data:

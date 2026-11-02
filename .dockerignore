@@ -1,0 +1,14 @@
+.git
+**/node_modules
+rust/target
+rust/frontend/dist
+rust/worker/build
+rust/server/target
+**/.DS_Store
+.t.db
+.verify*.db
+rust/.verify*.db
+/tmp
+docker-compose.yml
+Dockerfile
+.wrangler

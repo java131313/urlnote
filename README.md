@@ -23,22 +23,67 @@ D1 兜底）缓存响应，写操作先落 D1 再更新/失效缓存，不会出
 
 ## 部署
 
-前置：Node.js、Rust 工具链（`rustup`，含 `wasm32-unknown-unknown` target）、`cargo install trunk worker-build`、`npx wrangler login` 已登录。
+### 生产架构(Sealos + GitHub Pages,无需本地部署)
 
-```bash
-# 首次：创建 D1 数据库与 KV 命名空间，把输出的 id 填进 wrangler.toml
-make create-db
-npx wrangler kv namespace create "urlnote-cache"
-
-# 初始化数据库表（远程 + 可选的本地开发库）
-make init-db
-make init-db-local
-
-# 部署（自动执行 make build：Rust 前端 Trunk 构建 + Rust Worker 编译为 WASM）
-make deploy
+```
+浏览器 ──▶ github.io 静态前端(Leptos WASM,.github/workflows/deploy-pages.yml)
+              │  fetch(API_BASE, 跨域带 Cookie)
+              ▼
+         Sealos:urlnote-server 应用(镜像 ghcr.io/java131313/urlnote-server)
+              │  MONGODB_URI
+              ▼
+         Sealos:MongoDB 应用 ── GridFS:便签正文/标记/图片;集合:users/sessions/dict
 ```
 
-部署后得到 `https://urlnote.<你的子域>.workers.dev`。
+两个镜像由 `.github/workflows/docker-ghcr.yml` 在推送 `go-back` 时自动构建并
+推到 GitHub Packages(:latest 与提交 SHA 两个标签):
+
+| 镜像 | 内容 |
+|---|---|
+| `ghcr.io/java131313/urlnote-frontend` | Leptos WASM 前端 + 词表/IPADIC 词典(nginx,:80);备选托管方式,生产用 github.io 即可 |
+| `ghcr.io/java131313/urlnote-server` | urlnote-server 纯 API(+ IPADIC 日文分词,:8080) |
+
+**1. Sealos:部署 MongoDB**
+
+应用商店安装 MongoDB(或新建 mongo:7 应用),记录连接信息
+(用户名/密码/集群内主机名,形如 `mongo-xxx.ns.svc`)。
+
+**2. Sealos:部署后端 urlnote-server**
+
+新建应用 → 镜像 `ghcr.io/java131313/urlnote-server:latest` → 环境变量:
+
+| 变量 | 示例 | 说明 |
+|---|---|---|
+| `MONGODB_URI` | `mongodb://root:密码@<mongo主机>:27017/?authSource=admin` | 指向 Sealos 的 MongoDB |
+| `MONGO_DB` | `urlnote` | 数据库名 |
+| `ADMIN_PASSWORD` | 强密码 | 首次启动创建 admin(默认 root@123,务必改) |
+| `CORS_ORIGINS` | `https://java131313.github.io` | 跨域来源,多个用逗号;**必须**含 Pages 地址 |
+| `PORT` | `8080` | 监听端口 |
+
+暴露 8080,Sealos 会分配 https 域名(跨站登录要求后端 HTTPS,平台已提供,
+无需改代码)。首次启动后在应用终端执行一次(幂等,可重复):
+
+```bash
+/app/urlnote-server seed     # 导入四语词典(70 组对照 + 6 万高频词)
+```
+
+**3. GitHub:配置并自动部署前端到 github.io**
+
+推送 `go-back` 分支即触发 `.github/workflows/deploy-pages.yml`:
+worker/frontend WASM 编译检查 → trunk 构建(注入 API_BASE)→ 推 `gh-pages`
+分支 → `https://java131313.github.io/urlnote`。
+
+仓库变量(Settings → Secrets and variables → Actions → **Variables**):
+
+| 变量 | 示例 | 说明 |
+|---|---|---|
+| `API_BASE` | `https://urlnote-server.xxx.sealosbja.site` | 第 2 步 Sealos 分配的后端域名,不带尾斜杠;改后任意推送即重新生效 |
+| `BASE_PATH` | `/urlnote` | 子路径部署才需要,默认可留空 |
+
+首次登录 `admin / <ADMIN_PASSWORD>`。
+
+> 备选:`docker-compose.yml`(mongo+server+web)仅作本地/其他主机自托管参考,
+> 生产环境按上面三节部署即可。
 
 ## 本地开发
 
@@ -117,12 +162,18 @@ rust/
   worker/        # Rust Cloudflare Worker（workers-rs，编译为 WASM）
   frontend/      # Rust + Leptos 前端（Trunk 构建；Vditor 运行时资源从 npm 包拷入 static/）
                  #   src/suggest.rs 四语词典提示（便签与 /oss 文件库编辑器共用）
+  server/        # 独立后端（axum + MongoDB）：正文/标记/图片走 GridFS，结构数据走集合
+                 #   cargo run -p urlnote-server [seed]；docker-compose 一键起
 frontend/        # 旧 Vue 3 前端（留档）
 schema.sql       # D1 建表语句（含 editor settings 列与四语词典 dict 表）
 migrations/      # 已部署数据库的增量迁移
 scripts/gen_dict_seed.py  # 生成 dict_seed.sql（70 组四语对照 + 6 万静态高频词入库）
 scripts/dict_seed.sql     # 生成的种子（INSERT OR IGNORE + 稳定 key，可重复执行）
-wrangler.toml      # 默认：Rust Worker / D1 / Assets 配置
+scripts/dict_translations.json  # 70 组四语对照（SQL 种子与 MongoDB 播种共用）
+.github/workflows/deploy-pages.yml  # 构建前端 WASM 并部署到 github.io
+Dockerfile         # 多阶段：前端 WASM + 后端 + IPADIC 词典 → 单镜像
+docker-compose.yml # mongo + app 一键栈（含健康检查、数据卷）
+wrangler.toml      # 备选：Rust Worker / D1 / Assets 配置
 Makefile         # build（Rust）/ dev / deploy / 数据库初始化
 archive/         # 旧版代码留档（文件存储版 / MySQL+Docker 版）
 ```

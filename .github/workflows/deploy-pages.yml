@@ -1,0 +1,79 @@
+# 构建 frontend/worker(WASM)并把前端部署到 GitHub Pages(github.io)。
+#
+# 架构:github.io 只托管静态前端;API 由自托管的 urlnote-server
+# (axum + MongoDB,docker-compose.yml)提供,跨域由 CORS_ORIGINS 放行。
+#
+# 需要的仓库配置(Settings → Secrets and variables → Actions → Variables):
+#   API_BASE   后端地址,如 https://api.example.com(不带尾斜杠)
+#              构建期注入前端(option_env!),推送后自动生效
+# 服务器端 docker compose 环境变量(见 docker-compose.yml):
+#   CORS_ORIGINS=https://java131313.github.io   (必须包含 Pages 来源)
+#   MONGO_ROOT_USER / MONGO_ROOT_PASSWORD / MONGO_DB / ADMIN_PASSWORD
+#
+# 注意:跨站登录要求后端走 HTTPS(SameSite=None; Secure cookie),
+#       请用 nginx/caddy 反代 :8080。
+name: deploy-frontend-to-pages
+
+on:
+  push:
+    branches: [go-back]
+    paths:
+      - "rust/frontend/**"
+      - "rust/shared/**"
+      - ".github/workflows/deploy-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: install trunk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: trunk
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: rust/frontend/package-lock.json
+
+      # 与 make rust-static 相同:把 npm 包的运行时资源放进 static/
+      - name: stage runtime assets
+        working-directory: rust/frontend
+        run: |
+          npm ci --no-audit --no-fund
+          rm -rf static/vditor static/mammoth static/turndown static/pdfjs
+          mkdir -p static/vditor static/mammoth static/turndown static/pdfjs
+          cp -R node_modules/vditor/dist static/vditor/dist
+          cp node_modules/mammoth/mammoth.browser.min.js static/mammoth/
+          cp node_modules/turndown/dist/turndown.js static/turndown/
+          cp node_modules/pdfjs-dist/legacy/build/pdf.min.js \
+             node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js static/pdfjs/
+
+      # 两个 WASM 目标都要能编译(worker 是 Cloudflare 备选,不随 Pages 部署)
+      - name: check worker + frontend crates
+        run: cargo check --target wasm32-unknown-unknown -p urlnote-worker -p urlnote-frontend
+
+      # API_BASE/BASE_PATH 是编译期环境变量(main.rs 的 option_env!)
+      - name: build frontend (WASM)
+        working-directory: rust/frontend
+        env:
+          API_BASE: ${{ vars.API_BASE }}
+          BASE_PATH: /urlnote
+        run: trunk build --release --public-url /urlnote
+
+      - name: deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: rust/frontend/dist

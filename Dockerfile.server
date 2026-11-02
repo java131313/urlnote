@@ -1,0 +1,28 @@
+# 后端镜像:urlnote-server 二进制 + IPADIC 词典(日文分词用)。
+# 纯 API,不托管前端。全部连接配置均为运行时环境变量:
+#   MONGODB_URI    mongodb://<用户>:<密码>@<MongoDB主机>:27017/?authSource=admin
+#   MONGO_DB       urlnote
+#   ADMIN_PASSWORD 首次启动创建的 admin 密码(默认 root@123)
+#   CORS_ORIGINS   跨域来源,逗号分隔;前端跨域部署必填
+#   PORT           监听端口(默认 8080)
+
+FROM rust:1-bookworm AS be-build
+WORKDIR /app/rust
+COPY rust/Cargo.toml rust/Cargo.lock ./
+# 精简 workspace:本阶段只需要 shared + server
+RUN printf '[workspace]\nmembers = ["shared", "server"]\nresolver = "2"\n' > Cargo.toml
+COPY rust/shared ./shared
+COPY rust/server ./server
+RUN cargo build --release -p urlnote-server
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=be-build /app/rust/target/release/urlnote-server /app/urlnote-server
+COPY rust/frontend/static/dict/system_ipadic.dic.zst /app/dict/system_ipadic.dic.zst
+ENV IPADIC_PATH=/app/dict/system_ipadic.dic.zst \
+    PORT=8080
+EXPOSE 8080
+CMD ["/app/urlnote-server"]
