@@ -13,6 +13,7 @@
 use crate::suggest::{Suggest, SuggestPanel};
 use crate::vditor::VditorEditor;
 use crate::{current_time, document, window, BASE_PATH};
+use shared::{valid_color, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
 use gloo_events::EventListener;
 use hmac::{Hmac, Mac};
 use leptos::html::Div;
@@ -626,6 +627,9 @@ struct OssCtx {
     dirty: RwSignal<bool>,
     suppress: RwSignal<f64>,
     status: RwSignal<String>,
+    // editor display settings (persisted in a per-file sidecar object)
+    font_size: RwSignal<i64>,
+    color: RwSignal<String>,
     suggest: Suggest,
 }
 
@@ -633,6 +637,48 @@ thread_local! {
     static CTX: RefCell<Option<OssCtx>> = const { RefCell::new(None) };
     // document-level listeners (suggestion panel) kept alive for the page
     static LISTENERS: RefCell<Vec<EventListener>> = const { RefCell::new(Vec::new()) };
+}
+
+const OSS_FONT_STEP: i64 = 2;
+
+/// 编辑器设置的 sidecar 文件:<key>.settings.json(JSON: {"font_size":n,"color":"#rrggbb"})
+fn settings_key(key: &str) -> String {
+    format!("{key}.settings.json")
+}
+
+fn settings_json(ctx: &OssCtx) -> String {
+    serde_json::json!({
+        "font_size": ctx.font_size.get(),
+        "color": ctx.color.get(),
+    })
+    .to_string()
+}
+
+/// 解析 sidecar 内容并应用到信号;解析失败/缺字段回落默认
+fn apply_settings(ctx: &OssCtx, text: &str) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return };
+    if let Some(n) = v.get("font_size").and_then(|x| x.as_f64()) {
+        ctx.font_size.set(shared::resolve_font_size(n));
+    }
+    let c = v.get("color").and_then(|x| x.as_str()).unwrap_or_default();
+    ctx.color.set(if valid_color(c) { c.to_string() } else { String::new() });
+}
+
+fn reset_settings(ctx: &OssCtx) {
+    ctx.font_size.set(DEFAULT_FONT_SIZE);
+    ctx.color.set(String::new());
+}
+
+fn bump_font(ctx: &OssCtx, delta: i64) {
+    let next = ctx.font_size.get() + delta;
+    ctx.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+}
+
+fn evt_value(e: &web_sys::Event) -> String {
+    e.target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        .map(|el| el.value())
+        .unwrap_or_default()
 }
 
 /// Insert hook for the suggestion panel: replace the re-selected fragment
@@ -710,7 +756,14 @@ async fn copy_prefix(old_prefix: &str, new_prefix: &str) -> Result<(), String> {
 async fn rename_file_key(old_key: &str, new_key: &str) -> Result<(), String> {
     let content = get_object(old_key).await?;
     put_object(new_key, &content).await?;
-    delete_object(old_key).await
+    delete_object(old_key).await?;
+    // 编辑器设置 sidecar 一并移动(best-effort)
+    let (old_s, new_s) = (settings_key(old_key), settings_key(new_key));
+    if let Ok(s) = get_object(&old_s).await {
+        let _ = put_object(&new_s, &s).await;
+        let _ = delete_object(&old_s).await;
+    }
+    Ok(())
 }
 
 fn open_file(key: String, name: String) {
@@ -721,13 +774,21 @@ fn open_file(key: String, name: String) {
             Ok(text) => {
                 ctx.suppress.set(js_sys::Date::now() + 500.0);
                 set_editor_value(&text);
-                ctx.current.set(Some(key));
+                ctx.current.set(Some(key.clone()));
                 ctx.current_name.set(name.clone());
                 ctx.dirty.set(false);
+                reset_settings(&ctx);
                 if let Some(doc) = window().document() {
                     doc.set_title(&format!("{name} · 文件库"));
                 }
                 ctx.status.set(format!("已载入 {name}"));
+                // 编辑器设置(sidecar):404/损坏则保持默认
+                let ctx2 = ctx;
+                spawn_local(async move {
+                    if let Ok(s) = get_object(&settings_key(&key)).await {
+                        apply_settings(&ctx2, &s);
+                    }
+                });
             }
             Err(e) => ctx.status.set(e),
         }
@@ -742,6 +803,9 @@ fn save_current() {
     spawn_local(async move {
         match put_object(&key, &content).await {
             Ok(()) => {
+                // 编辑器设置随文件一起持久化,失败不阻塞主保存
+                let body = settings_json(&ctx);
+                let _ = put_object(&settings_key(&key), &body).await;
                 ctx.dirty.set(false);
                 ctx.status.set(format!("已保存 {}", current_time()));
                 refresh_tree();
@@ -912,7 +976,12 @@ fn delete_entry(path: String, is_dir: bool) {
                 Err(e) => Err(e),
             }
         } else {
-            delete_object(&path).await
+            let r = delete_object(&path).await;
+            if r.is_ok() {
+                // 编辑器设置 sidecar 一并删除(best-effort)
+                let _ = delete_object(&settings_key(&path)).await;
+            }
+            r
         };
         match r {
             Ok(()) => {
@@ -1037,6 +1106,8 @@ pub fn OssView() -> impl IntoView {
         dirty: RwSignal::new(false),
         suppress: RwSignal::new(0.0f64),
         status: RwSignal::new(String::new()),
+        font_size: RwSignal::new(DEFAULT_FONT_SIZE),
+        color: RwSignal::new(String::new()),
         suggest: Suggest::new(),
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
@@ -1159,7 +1230,15 @@ pub fn OssView() -> impl IntoView {
                             children=move |d| view! { <TreeDir prefix=d.prefix.clone()/> }
                         />
                         <For
-                            each=move || ctx.tree.with(|t| t.files.clone())
+                            each=move || {
+                                ctx.tree.with(|t| {
+                                    t.files
+                                        .iter()
+                                        .filter(|f| !f.name.ends_with(".settings.json"))
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                })
+                            }
                             key=|f| f.key.clone()
                             children=move |f| {
                                 let key_open = f.key.clone();
@@ -1196,8 +1275,71 @@ pub fn OssView() -> impl IntoView {
                             (ctx.dirty.get() && ctx.current.get().is_some())
                                 .then(|| view! { <span class="oss-dirty">"● 未保存"</span> })
                         }}
+                        <span class="oss-spacer"></span>
+                        <Show when=move || ctx.current.get().is_some()>
+                            <button
+                                type="button"
+                                class="tool"
+                                title="缩小显示"
+                                on:click=move |_| bump_font(&ctx, -OSS_FONT_STEP)
+                            >
+                                "A−"
+                            </button>
+                            <button
+                                type="button"
+                                class="tool"
+                                title="放大显示"
+                                on:click=move |_| bump_font(&ctx, OSS_FONT_STEP)
+                            >
+                                "A+"
+                            </button>
+                            <Show when=move || ctx.font_size.get() != DEFAULT_FONT_SIZE>
+                                <button
+                                    type="button"
+                                    class="tool"
+                                    title="恢复默认大小"
+                                    on:click=move |_| ctx.font_size.set(DEFAULT_FONT_SIZE)
+                                >
+                                    "A"
+                                </button>
+                            </Show>
+                            <input
+                                type="color"
+                                class="color"
+                                title="文字颜色"
+                                prop:value=move || {
+                                    let c = ctx.color.get();
+                                    if c.is_empty() { "#000000".to_string() } else { c }
+                                }
+                                on:input=move |e| ctx.color.set(evt_value(&e))
+                            />
+                            <Show when=move || !ctx.color.get().is_empty()>
+                                <button
+                                    type="button"
+                                    class="tool"
+                                    title="恢复默认颜色"
+                                    on:click=move |_| ctx.color.set(String::new())
+                                >
+                                    "默认"
+                                </button>
+                            </Show>
+                        </Show>
                     </div>
-                    <div class="oss-editor" node_ref=editor_ref></div>
+                    <div
+                        class="oss-editor"
+                        node_ref=editor_ref
+                        style=move || {
+                            let mut st = format!(
+                                "--oss-zoom: {:.3};",
+                                ctx.font_size.get() as f64 / DEFAULT_FONT_SIZE as f64,
+                            );
+                            let c = ctx.color.get();
+                            if !c.is_empty() {
+                                st.push_str(&format!("--oss-color: {c};"));
+                            }
+                            st
+                        }
+                    ></div>
                     <SuggestPanel sug=ctx.suggest insert=insert/>
                 </main>
             </div>

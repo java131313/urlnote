@@ -1266,7 +1266,18 @@ header a:hover {
   min-height: 0;
 }
 
+/* 文档库编辑器的字号/颜色(与便签编辑器同一套机制,作用域为 .oss-editor) */
+.oss-editor {
+  color: var(--oss-color, inherit);
+}
+.oss-editor .vditor-content {
+  zoom: var(--oss-zoom, 1);
+}
+.oss-editor :is(.vditor-wysiwyg, .vditor-preview) pre.vditor-reset:not(:has(> code)) {
+  color: inherit;
+}
 .oss-editor .vditor {
+
   height: 100%;
   border: 0;
 }
