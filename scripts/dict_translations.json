@@ -1,0 +1,422 @@
+[
+ {
+  "zh_cn": "中国",
+  "zh_tw": "中國",
+  "ja": "中国",
+  "en": "China"
+ },
+ {
+  "zh_cn": "美国",
+  "zh_tw": "美國",
+  "ja": "アメリカ",
+  "en": "America"
+ },
+ {
+  "zh_cn": "日本",
+  "zh_tw": "日本",
+  "ja": "日本",
+  "en": "Japan"
+ },
+ {
+  "zh_cn": "英国",
+  "zh_tw": "英國",
+  "ja": "イギリス",
+  "en": "Britain"
+ },
+ {
+  "zh_cn": "法国",
+  "zh_tw": "法國",
+  "ja": "フランス",
+  "en": "France"
+ },
+ {
+  "zh_cn": "德国",
+  "zh_tw": "德國",
+  "ja": "ドイツ",
+  "en": "Germany"
+ },
+ {
+  "zh_cn": "世界",
+  "zh_tw": "世界",
+  "ja": "世界",
+  "en": "world"
+ },
+ {
+  "zh_cn": "国家",
+  "zh_tw": "國家",
+  "ja": "国",
+  "en": "country"
+ },
+ {
+  "zh_cn": "城市",
+  "zh_tw": "城市",
+  "ja": "都市",
+  "en": "city"
+ },
+ {
+  "zh_cn": "语言",
+  "zh_tw": "語言",
+  "ja": "言語",
+  "en": "language"
+ },
+ {
+  "zh_cn": "中文",
+  "zh_tw": "中文",
+  "ja": "中国語",
+  "en": "Chinese"
+ },
+ {
+  "zh_cn": "英文",
+  "zh_tw": "英文",
+  "ja": "英語",
+  "en": "English"
+ },
+ {
+  "zh_cn": "日语",
+  "zh_tw": "日語",
+  "ja": "日本語",
+  "en": "Japanese"
+ },
+ {
+  "zh_cn": "汉字",
+  "zh_tw": "漢字",
+  "ja": "漢字",
+  "en": "kanji"
+ },
+ {
+  "zh_cn": "学习",
+  "zh_tw": "學習",
+  "ja": "学習",
+  "en": "study"
+ },
+ {
+  "zh_cn": "工作",
+  "zh_tw": "工作",
+  "ja": "仕事",
+  "en": "work"
+ },
+ {
+  "zh_cn": "生活",
+  "zh_tw": "生活",
+  "ja": "生活",
+  "en": "life"
+ },
+ {
+  "zh_cn": "时间",
+  "zh_tw": "時間",
+  "ja": "時間",
+  "en": "time"
+ },
+ {
+  "zh_cn": "今天",
+  "zh_tw": "今天",
+  "ja": "今日",
+  "en": "today"
+ },
+ {
+  "zh_cn": "明天",
+  "zh_tw": "明天",
+  "ja": "明日",
+  "en": "tomorrow"
+ },
+ {
+  "zh_cn": "昨天",
+  "zh_tw": "昨天",
+  "ja": "昨日",
+  "en": "yesterday"
+ },
+ {
+  "zh_cn": "早上",
+  "zh_tw": "早上",
+  "ja": "朝",
+  "en": "morning"
+ },
+ {
+  "zh_cn": "晚上",
+  "zh_tw": "晚上",
+  "ja": "夜",
+  "en": "night"
+ },
+ {
+  "zh_cn": "谢谢",
+  "zh_tw": "謝謝",
+  "ja": "ありがとう",
+  "en": "thank you"
+ },
+ {
+  "zh_cn": "再见",
+  "zh_tw": "再見",
+  "ja": "さようなら",
+  "en": "goodbye"
+ },
+ {
+  "zh_cn": "你好",
+  "zh_tw": "你好",
+  "ja": "こんにちは",
+  "en": "hello"
+ },
+ {
+  "zh_cn": "爱",
+  "zh_tw": "愛",
+  "ja": "愛",
+  "en": "love"
+ },
+ {
+  "zh_cn": "书",
+  "zh_tw": "書",
+  "ja": "本",
+  "en": "book"
+ },
+ {
+  "zh_cn": "电影",
+  "zh_tw": "電影",
+  "ja": "映画",
+  "en": "movie"
+ },
+ {
+  "zh_cn": "音乐",
+  "zh_tw": "音樂",
+  "ja": "音楽",
+  "en": "music"
+ },
+ {
+  "zh_cn": "电脑",
+  "zh_tw": "電腦",
+  "ja": "パソコン",
+  "en": "computer"
+ },
+ {
+  "zh_cn": "手机",
+  "zh_tw": "手機",
+  "ja": "携帯電話",
+  "en": "mobile phone"
+ },
+ {
+  "zh_cn": "网络",
+  "zh_tw": "網絡",
+  "ja": "ネットワーク",
+  "en": "network"
+ },
+ {
+  "zh_cn": "服务器",
+  "zh_tw": "伺服器",
+  "ja": "サーバー",
+  "en": "server"
+ },
+ {
+  "zh_cn": "数据库",
+  "zh_tw": "資料庫",
+  "ja": "データベース",
+  "en": "database"
+ },
+ {
+  "zh_cn": "程序",
+  "zh_tw": "程式",
+  "ja": "プログラム",
+  "en": "program"
+ },
+ {
+  "zh_cn": "软件",
+  "zh_tw": "軟體",
+  "ja": "ソフトウェア",
+  "en": "software"
+ },
+ {
+  "zh_cn": "硬件",
+  "zh_tw": "硬體",
+  "ja": "ハードウェア",
+  "en": "hardware"
+ },
+ {
+  "zh_cn": "搜索",
+  "zh_tw": "搜尋",
+  "ja": "検索",
+  "en": "search"
+ },
+ {
+  "zh_cn": "文件",
+  "zh_tw": "檔案",
+  "ja": "ファイル",
+  "en": "file"
+ },
+ {
+  "zh_cn": "图片",
+  "zh_tw": "圖片",
+  "ja": "画像",
+  "en": "image"
+ },
+ {
+  "zh_cn": "编辑",
+  "zh_tw": "編輯",
+  "ja": "編集",
+  "en": "edit"
+ },
+ {
+  "zh_cn": "保存",
+  "zh_tw": "儲存",
+  "ja": "保存",
+  "en": "save"
+ },
+ {
+  "zh_cn": "删除",
+  "zh_tw": "刪除",
+  "ja": "削除",
+  "en": "delete"
+ },
+ {
+  "zh_cn": "登录",
+  "zh_tw": "登入",
+  "ja": "ログイン",
+  "en": "login"
+ },
+ {
+  "zh_cn": "注销",
+  "zh_tw": "登出",
+  "ja": "ログアウト",
+  "en": "logout"
+ },
+ {
+  "zh_cn": "密码",
+  "zh_tw": "密碼",
+  "ja": "パスワード",
+  "en": "password"
+ },
+ {
+  "zh_cn": "用户",
+  "zh_tw": "使用者",
+  "ja": "ユーザー",
+  "en": "user"
+ },
+ {
+  "zh_cn": "管理员",
+  "zh_tw": "管理員",
+  "ja": "管理者",
+  "en": "administrator"
+ },
+ {
+  "zh_cn": "朋友",
+  "zh_tw": "朋友",
+  "ja": "友達",
+  "en": "friend"
+ },
+ {
+  "zh_cn": "家人",
+  "zh_tw": "家人",
+  "ja": "家族",
+  "en": "family"
+ },
+ {
+  "zh_cn": "天气",
+  "zh_tw": "天氣",
+  "ja": "天気",
+  "en": "weather"
+ },
+ {
+  "zh_cn": "食物",
+  "zh_tw": "食物",
+  "ja": "食べ物",
+  "en": "food"
+ },
+ {
+  "zh_cn": "水",
+  "zh_tw": "水",
+  "ja": "水",
+  "en": "water"
+ },
+ {
+  "zh_cn": "钱",
+  "zh_tw": "錢",
+  "ja": "お金",
+  "en": "money"
+ },
+ {
+  "zh_cn": "新闻",
+  "zh_tw": "新聞",
+  "ja": "ニュース",
+  "en": "news"
+ },
+ {
+  "zh_cn": "问题",
+  "zh_tw": "問題",
+  "ja": "問題",
+  "en": "question"
+ },
+ {
+  "zh_cn": "答案",
+  "zh_tw": "答案",
+  "ja": "答え",
+  "en": "answer"
+ },
+ {
+  "zh_cn": "名字",
+  "zh_tw": "名字",
+  "ja": "名前",
+  "en": "name"
+ },
+ {
+  "zh_cn": "地址",
+  "zh_tw": "地址",
+  "ja": "住所",
+  "en": "address"
+ },
+ {
+  "zh_cn": "电话",
+  "zh_tw": "電話",
+  "ja": "電話",
+  "en": "telephone"
+ },
+ {
+  "zh_cn": "电子邮件",
+  "zh_tw": "電子郵件",
+  "ja": "メール",
+  "en": "email"
+ },
+ {
+  "zh_cn": "公司",
+  "zh_tw": "公司",
+  "ja": "会社",
+  "en": "company"
+ },
+ {
+  "zh_cn": "学校",
+  "zh_tw": "學校",
+  "ja": "学校",
+  "en": "school"
+ },
+ {
+  "zh_cn": "医院",
+  "zh_tw": "醫院",
+  "ja": "病院",
+  "en": "hospital"
+ },
+ {
+  "zh_cn": "车站",
+  "zh_tw": "車站",
+  "ja": "駅",
+  "en": "station"
+ },
+ {
+  "zh_cn": "机场",
+  "zh_tw": "機場",
+  "ja": "空港",
+  "en": "airport"
+ },
+ {
+  "zh_cn": "银行",
+  "zh_tw": "銀行",
+  "ja": "銀行",
+  "en": "bank"
+ },
+ {
+  "zh_cn": "商店",
+  "zh_tw": "商店",
+  "ja": "商店",
+  "en": "shop"
+ },
+ {
+  "zh_cn": "价格",
+  "zh_tw": "價格",
+  "ja": "価格",
+  "en": "price"
+ }
+]

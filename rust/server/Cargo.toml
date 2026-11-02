@@ -1,0 +1,21 @@
+[package]
+name = "urlnote-server"
+version = "0.1.0"
+edition = "2021"
+description = "urlnote standalone backend (axum + MongoDB) — note content in GridFS, structured data in collections"
+
+[dependencies]
+shared = { path = "../shared" }
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+mongodb = "3"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rand = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+jieba-rs = "0.6"
+vibrato = { version = "0.5", default-features = false }
+ruzstd = "0.7"
