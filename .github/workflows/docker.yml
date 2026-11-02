@@ -1,5 +1,7 @@
 name: Build and push frontend Docker image
 
+# 注意:.dockerignore 不得排除 rust/frontend/dist(docker build 需要它)
+
 # 构建前端（Rust/Leptos → WASM，Trunk）并打入 nginx 运行时镜像，
 # 推送到 GitHub Container Registry（ghcr.io/java131313/urlnote-frontend）。
 # 后端 API 仍由 Cloudflare Worker 提供，通过编译期 API_BASE 指过去；

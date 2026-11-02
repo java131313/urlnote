@@ -1,14 +1,13 @@
 .git
 **/node_modules
 rust/target
-rust/frontend/dist
 rust/worker/build
 rust/server/target
 **/.DS_Store
 .t.db
 .verify*.db
 rust/.verify*.db
-/tmp
 docker-compose.yml
-Dockerfile
 .wrangler
+# 注意:不要排除 rust/frontend/dist —— docker.yml 在 CI 里 Trunk 构建
+# 后要以它为 docker build 上下文打包(见 docker/frontend.Dockerfile)
