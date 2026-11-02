@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- 外链图片（如极客时间等防盗链图床）在 Referer 为第三方域名时会返回 403；
+       声明 no-referrer 后浏览器请求子资源不带 Referer，图床对空 Referer 放行 -->
+  <meta name="referrer" content="no-referrer">
+  <title>urlnote</title>
+  <link rel="stylesheet" href="/urlnote/app-4d0d4e2a6209ff02.css" integrity="sha384-6XZl6AeihxE9QvFO1zK7uJY3Wt3mZ7SU6fPYFaLFtQVX4FG8V479SnRr1Vml+J1w"/>
+  <link rel="stylesheet" href="/vditor/dist/index.css">
+  <script src="/vditor/dist/index.min.js"></script>
+  <!-- import 转换库：docx→HTML→Markdown，PDF→文本（均本地运行） -->
+  <script src="/mammoth/mammoth.browser.min.js"></script>
+  <script src="/turndown/turndown.js"></script>
+  <script src="/pdfjs/pdf.min.js"></script>
+<link rel="modulepreload" href="/urlnote/urlnote-frontend-372dae8bdb2c145f.js" crossorigin="anonymous" integrity="sha384-5kkfU+M0K9Wtf3fBV2bSuqCYOT9iBut1Vw2gAgJxtSa1RgGr9iiBnaRtOE8Rzp7p"><link rel="preload" href="/urlnote/urlnote-frontend-3f2c2f68c4282853_bg.wasm" crossorigin="anonymous" integrity="sha384-vNKoWs+yzo5XuvshgXPF7EQKG3sjwlVgYgTJqjAVr92aJ9zZARYms/H9myavawFs" as="fetch" type="application/wasm"></head>
+<body>
+  
+<script type="module">
+import init, * as bindings from '/urlnote/urlnote-frontend-372dae8bdb2c145f.js';
+const wasm = await init({ module_or_path: '/urlnote/urlnote-frontend-3f2c2f68c4282853_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+</body>
+</html>
