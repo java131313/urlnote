@@ -376,6 +376,13 @@ thread_local! {
 
 const LANG_STORAGE_KEY: &str = "urlnote-suggest-lang";
 
+/// 构建期注入的默认语言(如 zh_cn);空 = 自动。用户在选择器里改过后
+/// 以 localStorage 为准(见 init_selected_lang)
+const DEFAULT_SELECTED_LANG: &str = match option_env!("SUGGEST_LANG") {
+    Some(v) => v,
+    None => "",
+};
+
 pub fn selected_lang() -> String {
     SELECTED.with(|c| c.borrow().clone())
 }
@@ -393,12 +400,17 @@ pub fn set_selected_lang(code: &str) {
 }
 
 fn init_selected_lang() {
+    // 初始值:构建期默认;localStorage 里存过用户选择则覆盖
+    let mut initial = DEFAULT_SELECTED_LANG.trim().to_string();
     if let Ok(Some(store)) = window().local_storage() {
         if let Ok(Some(v)) = store.get_item(LANG_STORAGE_KEY) {
             if v.is_empty() || valid_lang_code(&v) {
-                SELECTED.with(|c| *c.borrow_mut() = v);
+                initial = v;
             }
         }
+    }
+    if initial.is_empty() || valid_lang_code(&initial) {
+        SELECTED.with(|c| *c.borrow_mut() = initial);
     }
 }
 

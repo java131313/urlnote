@@ -28,7 +28,8 @@ WORKDIR /app/rust/frontend
 # BASE_PATH/API_BASE 为编译期环境变量(main.rs option_env!)
 ARG BASE_PATH=""
 ARG API_BASE=""
-ENV BASE_PATH=$BASE_PATH API_BASE=$API_BASE
+ARG SUGGEST_LANG=""
+ENV BASE_PATH=$BASE_PATH API_BASE=$API_BASE SUGGEST_LANG=$SUGGEST_LANG
 RUN trunk build --release $(if [ -n "$BASE_PATH" ]; then echo "--public-url $BASE_PATH"; fi)
 
 FROM nginx:1-alpine

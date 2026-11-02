@@ -73,6 +73,7 @@ jobs:
         env:
           API_BASE: ${{ vars.API_BASE }}
           BASE_PATH: /urlnote
+          SUGGEST_LANG: ${{ vars.SUGGEST_LANG }}
         run: trunk build --release --public-url /urlnote
 
       - name: deploy to gh-pages

@@ -55,6 +55,7 @@ jobs:
           build-args: |
             API_BASE=${{ vars.API_BASE }}
             BASE_PATH=${{ vars.BASE_PATH }}
+            SUGGEST_LANG=${{ vars.SUGGEST_LANG }}
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
