@@ -7,7 +7,8 @@ use futures_util::TryStreamExt;
 use mongodb::bson::{doc, Bson};
 use serde::Deserialize;
 
-use crate::db::{doc_i64, AppState};
+use crate::db::{doc_i64, doc_str, AppState};
+use mongodb::bson::Document;
 
 const LANGS: [&str; 4] = ["zh_cn", "zh_tw", "ja", "en"];
 
@@ -145,30 +146,76 @@ pub async fn run(st: &AppState) -> Result<(), String> {
     }
     println!("translation groups: {}", rows.len());
 
-    // 2. static word lists — one group per word (no translations)
+    // 2. static word lists — one group per word (no translations).
+    //    Bulk path: one $in existence check + counter range reservation +
+    //    chunked insert_many per collection (a remote MongoDB would take
+    //    tens of minutes with per-word roundtrips).
     for lang in ["zh_cn", "ja"] {
         let path = default_wordlist(lang);
         let Ok(text) = std::fs::read_to_string(&path) else {
             eprintln!("wordlist missing: {path}");
             continue;
         };
-        let words: Vec<&str> = text.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
-        for w in &words {
-            // skip words that already live in a translation group
-            let exists = st
+        let words: Vec<String> = text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        // drop words that already exist (e.g. absorbed into translation groups)
+        let mut fresh: Vec<String> = Vec::with_capacity(words.len());
+        for chunk in words.chunks(2000) {
+            let arr: Vec<&str> = chunk.iter().map(|s| s.as_str()).collect();
+            // projection: only the word field
+            let opts = mongodb::options::FindOptions::builder()
+                .projection(doc! { "word": 1 })
+                .build();
+            let mut cur = st
                 .col("dict_word")
-                .find_one(doc! { "lang": lang, "word": w })
+                .find(doc! { "lang": lang, "word": { "$in": &arr } })
+                .with_options(opts)
                 .await
-                .ok()
-                .flatten()
-                .is_some();
-            if exists {
-                continue;
+                .map_err(|e| e.to_string())?;
+            let mut existing = std::collections::HashSet::new();
+            while let Some(d) = cur.try_next().await.map_err(|e| e.to_string())? {
+                existing.insert(doc_str(&d, "word"));
             }
-            let gid = group_by_key(st, &format!("w:{lang}:{w}")).await?;
-            upsert_into_group(st, gid, lang, w).await?;
+            for w in chunk {
+                if !existing.contains(w) {
+                    fresh.push(w.clone());
+                }
+            }
         }
-        println!("{lang} wordlist: {} words", words.len());
+        if fresh.is_empty() {
+            println!("{lang} wordlist: 0 new words (all present)");
+            continue;
+        }
+
+        let base = crate::db::next_seq_range(&st.db, "dict_group", fresh.len() as i64).await?;
+        // per-word groups
+        let group_docs: Vec<Document> = fresh
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                doc! { "_id": base + i as i64, "key": format!("w:{lang}:{w}") }
+            })
+            .collect();
+        for chunk in group_docs.chunks(1000) {
+            let _ = st.col("dict_group").insert_many(chunk).await; // dup keys = already seeded
+        }
+        // per-word rows
+        let wbase = crate::db::next_seq_range(&st.db, "dict_word", fresh.len() as i64).await?;
+        let word_docs: Vec<Document> = fresh
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                doc! { "seq": wbase + i as i64, "group_id": base + i as i64, "lang": lang, "word": w }
+            })
+            .collect();
+        for chunk in word_docs.chunks(1000) {
+            let _ = st.col("dict_word").insert_many(chunk).await;
+        }
+        println!("{lang} wordlist: {} words ({} skipped)", fresh.len(), words.len() - fresh.len());
     }
 
     // 3. sweep empty groups (wordlist words absorbed into translation groups

@@ -76,12 +76,26 @@ fn api_router(st: AppState) -> Router {
             .iter()
             .filter_map(|o| o.parse().ok())
             .collect();
+        // 注意:allow_credentials(true) 时 tower-http 禁止 Any 通配
+        // (浏览器规范:携带凭据时不允许 *),必须给出显式清单
         Some(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(origins))
                 .allow_credentials(true)
-                .allow_methods(tower_http::cors::Any)
-                .allow_headers(tower_http::cors::Any),
+                .allow_methods([
+                    axum::http::Method::GET,
+                    axum::http::Method::POST,
+                    axum::http::Method::PUT,
+                    axum::http::Method::DELETE,
+                    axum::http::Method::OPTIONS,
+                    axum::http::Method::HEAD,
+                ])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::ACCEPT,
+                    axum::http::header::AUTHORIZATION,
+                    axum::http::header::HeaderName::from_static("x-requested-with"),
+                ]),
         )
     };
 

@@ -85,6 +85,24 @@ worker/frontend WASM 编译检查 → trunk 构建(注入 API_BASE)→ 推 `gh-p
 > 备选:`docker-compose.yml`(mongo+server+web)仅作本地/其他主机自托管参考,
 > 生产环境按上面三节部署即可。
 
+### 多前端来源(CORS 配置)
+
+后端 `CORS_ORIGINS` 是**逗号分隔的精确 Origin 列表**(自动去空白和尾斜杠),
+要放行几个前端就填几个:
+
+```bash
+CORS_ORIGINS=https://urlnote.idiom.ccwu.cc,https://java131313.github.io,https://urlnote-frontend.xxx.sealosbja.site
+```
+
+| 前端托管 | Origin(填进 CORS_ORIGINS) | 该前端的 API 指向 |
+|---|---|---|
+| Cloudflare(wrangler) | `https://urlnote.idiom.ccwu.cc` | 默认同源 → 走 **Worker+D1,独立数据**;要让这个前端也连 MongoDB 后端,需用 `API_BASE=https://<sealos server>` 重新构建前端再部署 |
+| GitHub Pages | `https://java131313.github.io` | 仓库变量 `API_BASE`(deploy-pages.yml 构建期注入) |
+| Sealos 前端应用 | `https://<sealos 分配的域名>` | 同源部署可留空;跨端口/域名时填 server 地址 |
+
+注意:CORS 只管"浏览器允许跨域访问";每个前端最终连哪个后端由各自的
+`API_BASE` 决定,两套后端(Cloudflare D1 / MongoDB)的数据互不相通。
+
 ## 本地开发
 
 ```bash

@@ -30,10 +30,12 @@ impl AppState {
             .unwrap_or_else(|e| panic!("mongodb connect failed ({uri}): {e}"));
         let db = client.database(&name);
         init_indexes(&db).await;
+        // 多个前端来源逗号分隔;归一化(去空白/尾斜杠),防止
+        // "https://x/" 之类写法与浏览器 Origin 精确匹配失败
         let cors_origins = std::env::var("CORS_ORIGINS")
             .unwrap_or_default()
             .split(',')
-            .map(|s| s.trim().to_string())
+            .map(|s| s.trim().trim_end_matches('/').to_string())
             .filter(|s| !s.is_empty())
             .collect();
         let static_dir = std::env::var("STATIC_DIR")
@@ -171,6 +173,31 @@ pub async fn next_seq(db: &Database, name: &str) -> Result<i64, String> {
     doc.get("seq")
         .and_then(|v| v.as_i64())
         .ok_or_else(|| "counter seq missing".to_string())
+}
+
+/// Reserve `n` consecutive counter values in one roundtrip; returns the
+/// first id of the reserved range (ids are first..first+n).
+pub async fn next_seq_range(db: &Database, name: &str, n: i64) -> Result<i64, String> {
+    let counters = db.collection::<Document>("counters");
+    let doc = counters
+        .find_one_and_update(
+            doc! { "_id": name },
+            doc! { "$inc": { "seq": Bson::Int64(n) } },
+        )
+        .with_options(
+            FindOneAndUpdateOptions::builder()
+                .upsert(true)
+                .return_document(ReturnDocument::After)
+                .build(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "counter missing".to_string())?;
+    let end = doc
+        .get("seq")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "counter seq missing".to_string())?;
+    Ok(end - n + 1)
 }
 
 pub fn doc_str(d: &Document, key: &str) -> String {

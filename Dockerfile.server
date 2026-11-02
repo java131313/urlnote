@@ -3,7 +3,8 @@
 #   MONGODB_URI    mongodb://<用户>:<密码>@<MongoDB主机>:27017/?authSource=admin
 #   MONGO_DB       urlnote
 #   ADMIN_PASSWORD 首次启动创建的 admin 密码(默认 root@123)
-#   CORS_ORIGINS   跨域来源,逗号分隔;前端跨域部署必填
+#   CORS_ORIGINS   跨域来源,逗号分隔(精确匹配 Origin,自动去尾斜杠);
+#                  例: https://urlnote.idiom.ccwu.cc,https://java131313.github.io,https://<sealos前端域名>
 #   PORT           监听端口(默认 8080)
 
 FROM rust:1-bookworm AS be-build
