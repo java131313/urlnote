@@ -1731,9 +1731,11 @@ async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
     };
 
     // ensure the word exists and sits in the requested group (the unique
-    // (lang_id, word) index makes the mapping unambiguous)
+    // (lang_id, word) index makes the mapping unambiguous);冲突时移动,
+    // 与 server 版的 move 语义一致
     db.prepare(
-        "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word) VALUES (?1, ?2, ?3)",
+        "INSERT INTO dict_word (group_id, lang_id, word) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(lang_id, word) DO UPDATE SET group_id = excluded.group_id",
     )
     .bind(&[JsValue::from(group_id as f64), JsValue::from(lang_id as f64), JsValue::from(word.clone())])?
     .run()
@@ -1752,8 +1754,9 @@ async fn create_word(mut req: Request, env: &Env) -> Result<Response> {
             continue;
         };
         db.prepare(
-            "INSERT OR IGNORE INTO dict_word (group_id, lang_id, word)
-             SELECT ?1, l.id, ?2 FROM dict_lang l WHERE l.code = ?3",
+            "INSERT INTO dict_word (group_id, lang_id, word)
+             SELECT ?1, l.id, ?2 FROM dict_lang l WHERE l.code = ?3 \
+             ON CONFLICT(lang_id, word) DO UPDATE SET group_id = excluded.group_id",
         )
         .bind(&[JsValue::from(group_id as f64), JsValue::from(w), JsValue::from(code.clone())])?
         .run()

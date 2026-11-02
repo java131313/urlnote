@@ -59,9 +59,10 @@ def load_candidates():
     # CEDICT: export default [[trad, simp, pinyin, gloss], ...]
     raw = open(CEDICT_JS, encoding="utf-8").read()
     data = json.loads(raw[len("export default "):])["all"]
+    # 同一简体可能有多条 CEDICT 记录:取 gloss 非空的首条
     by_simp = {}
     for trad, simp, _py, gloss, _x, _y in data:
-        if simp not in by_simp:
+        if simp not in by_simp or (not by_simp[simp][1] and gloss):
             by_simp[simp] = (trad, gloss)
     ja_set = {l.strip() for l in open(JA_LIST, encoding="utf-8") if l.strip()}
     return words, by_simp, ja_set
