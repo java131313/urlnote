@@ -585,7 +585,11 @@ fn init_editor(
     ] {
         toolbar.push(&JsValue::from_str(t));
     }
+    // 文字颜色工具(选中文字着色,存进 markdown)
+    let mut extra = crate::vditor::add_font_color_tool(&toolbar);
     set("toolbar", &toolbar.into());
+    // extra 与下方 cb/blur 一起进 cbs 保活
+    let mut cbs = std::mem::take(&mut extra);
 
     let editor = VditorEditor::new(mount, options.into());
     // into_js_value leaks the closure — dropping a Closure invalidates its JS
@@ -593,11 +597,10 @@ fn init_editor(
     // dirty tracking, leaving the save button permanently disabled)
     let cb = on_input.into_js_value();
     let blur = blur_cb.into_js_value();
+    cbs.push(cb);
+    cbs.push(blur);
     OSS_EDITOR.with(|c| {
-        *c.borrow_mut() = Some(OssEditor {
-            editor,
-            cbs: vec![cb, blur],
-        });
+        *c.borrow_mut() = Some(OssEditor { editor, cbs });
     });
     Ok(())
 }

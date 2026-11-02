@@ -769,6 +769,8 @@ impl Ctx {
         ] {
             toolbar.push(&JsValue::from_str(t));
         }
+        // 文字颜色工具:选中文字包 <span style="color:..">,存入 markdown
+        cbs.extend(vditor::add_font_color_tool(&toolbar));
         set("toolbar", &toolbar);
 
         let c = *self;
