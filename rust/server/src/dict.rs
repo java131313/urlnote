@@ -276,6 +276,8 @@ pub async fn create_word(
         .await
         .ok()
         .flatten();
+    // 词若已在别的组,移走后旧组可能变空(后面定向清理)
+    let old_group = existing.as_ref().map(|d| doc_i64(d, "group_id"));
     let saved = match existing {
         Some(mut d) => {
             if doc_i64(&d, "group_id") != group_id || d.get("seq").is_none() {
@@ -317,6 +319,10 @@ pub async fn create_word(
         }
     };
 
+    let mut orphan_groups: HashSet<i64> = HashSet::new();
+    if let Some(old_gid) = old_group {
+        orphan_groups.insert(old_gid);
+    }
     for (code, w) in &body.trans {
         if !valid_lang_code(code) {
             continue;
@@ -324,9 +330,17 @@ pub async fn create_word(
         let Some(w) = clean_dict_field(w).filter(|s| !s.is_empty()) else {
             continue;
         };
-        let _ = upsert_word_simple(&st, group_id, code, &w).await;
+        if let Ok(old) = upsert_word_simple(&st, group_id, code, &w).await {
+            if let Some(old_gid) = old {
+                orphan_groups.insert(old_gid);
+            }
+        }
     }
-    sweep_empty_groups(&st).await;
+    for gid in orphan_groups {
+        if gid != group_id {
+            sweep_group_if_empty(&st, gid).await;
+        }
+    }
 
     let gid = doc_i64(&saved, "group_id");
     let mut trans: BTreeMap<String, String> = BTreeMap::new();
@@ -350,8 +364,13 @@ pub async fn create_word(
     Ok(json_vec(StatusCode::OK, serde_json::to_vec(&item).unwrap()))
 }
 
-/// trans-side upsert without response assembly
-async fn upsert_word_simple(st: &AppState, group_id: i64, lang: &str, word: &str) -> Result<(), String> {
+/// trans-side upsert;返回旧 group_id(词被搬走时旧组可能变空,由调用方清理)
+async fn upsert_word_simple(
+    st: &AppState,
+    group_id: i64,
+    lang: &str,
+    word: &str,
+) -> Result<Option<i64>, String> {
     let existing = st
         .col("dict_word")
         .find_one(doc! { "lang": lang, "word": word })
@@ -359,8 +378,9 @@ async fn upsert_word_simple(st: &AppState, group_id: i64, lang: &str, word: &str
         .map_err(|e| e.to_string())?;
     match existing {
         Some(d) => {
+            let old_gid = doc_i64(&d, "group_id");
             let mut set = doc! {};
-            if doc_i64(&d, "group_id") != group_id {
+            if old_gid != group_id {
                 set.insert("group_id", group_id);
             }
             if d.get("seq").is_none() {
@@ -373,7 +393,7 @@ async fn upsert_word_simple(st: &AppState, group_id: i64, lang: &str, word: &str
                     .update_one(doc! { "_id": d.get("_id").cloned().unwrap_or(Bson::Null) }, doc! { "$set": set })
                     .await;
             }
-            Ok(())
+            Ok(Some(old_gid))
         }
         None => {
             let seq = next_seq(&st.db, "dict_word").await?;
@@ -381,7 +401,7 @@ async fn upsert_word_simple(st: &AppState, group_id: i64, lang: &str, word: &str
                 .insert_one(doc! { "seq": seq, "group_id": group_id, "lang": lang, "word": word })
                 .await
                 .map_err(|e| e.to_string())?;
-            Ok(())
+            Ok(None)
         }
     }
 }
@@ -416,6 +436,7 @@ pub async fn update_word(
         return Err(json_error(StatusCode::BAD_REQUEST, "bad request"));
     };
     let oid = doc.get("_id").cloned().unwrap_or(Bson::Null);
+    let old_group = doc_i64(&doc, "group_id");
     if let Some(word) = clean_dict_field(&body.word).filter(|s| !s.is_empty()) {
         let _ = st
             .col("dict_word")
@@ -430,8 +451,10 @@ pub async fn update_word(
             .col("dict_word")
             .update_one(doc! { "_id": &oid }, doc! { "$set": { "group_id": g } })
             .await;
+        if g != old_group {
+            sweep_group_if_empty(&st, old_group).await;
+        }
     }
-    sweep_empty_groups(&st).await;
     Ok(json_vec(
         StatusCode::OK,
         serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
@@ -450,36 +473,32 @@ pub async fn delete_word(
     let Some(doc) = find_word_by_seq(&st, id).await else {
         return Err(json_error(StatusCode::BAD_REQUEST, "bad request"));
     };
+    let gid = doc_i64(&doc, "group_id");
     let _ = st
         .col("dict_word")
         .delete_one(doc! { "_id": doc.get("_id").cloned().unwrap_or(Bson::Null) })
         .await;
-    sweep_empty_groups(&st).await;
+    sweep_group_if_empty(&st, gid).await;
     Ok(json_vec(
         StatusCode::OK,
         serde_json::to_vec(&OkResponse { ok: true }).unwrap(),
     ))
 }
 
-async fn sweep_empty_groups(st: &AppState) {
-    let groups = st.col("dict_group");
-    let mut empties: HashSet<i64> = HashSet::new();
-    if let Ok(mut cursor) = groups.find(doc! {}).await {
-        while let Ok(Some(g)) = cursor.try_next().await {
-            let gid = doc_i64(&g, "_id");
-            let has = st
-                .col("dict_word")
-                .find_one(doc! { "group_id": gid })
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            if !has {
-                empties.insert(gid);
-            }
-        }
+/// 定向清理:仅检查组 gid 是否已空(词被移走/删除后,原组可能变空)。
+/// 全表 sweep 曾是每次建词的 O(全组数) 灾难,禁用。
+async fn sweep_group_if_empty(st: &AppState, gid: i64) {
+    if gid <= 0 {
+        return;
     }
-    for gid in empties {
-        let _ = groups.delete_one(doc! { "_id": gid }).await;
+    let has = st
+        .col("dict_word")
+        .find_one(doc! { "group_id": gid })
+        .await
+        .ok()
+        .flatten()
+        .is_some();
+    if !has {
+        let _ = st.col("dict_group").delete_one(doc! { "_id": gid }).await;
     }
 }
