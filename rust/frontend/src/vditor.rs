@@ -6,9 +6,46 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
 /// 选区文字着色/去色的 JS 实现(eval 一次装入 window)。
-/// 颜色写成 <span style="color:#xxx">,Vditor 的 DOM→md 往返会保留行内
-/// 样式,因此能存进 markdown 文件;代码块(inline code / code)不着色。
+/// 颜色以 class fc-<rrggbb> 写在 <span> 上(Vditor 的 DOM→md 往返丢弃
+/// style 但保留 class,与 POS 标注 span.posw 同理),CSS 规则动态注入;
+/// MutationObserver 负责回显/预览时补规则。代码块不着色。
 const COLORIZE_JS: &str = r#"
+// class 承载颜色:Vditor 的 DOM→md 往返丢弃 style 属性但保留 class
+// (与 POS 标注 span.posw 同理),颜色以 fc-<rrggbb> 类名存进 markdown,
+// 展示时由下方动态注入的 CSS 规则着色。
+window.__urlnoteFcSet = {};
+window.__urlnoteEnsureFc = function (hex) {
+  hex = hex.toLowerCase();
+  if (window.__urlnoteFcSet[hex]) return;
+  window.__urlnoteFcSet[hex] = 1;
+  let st = document.getElementById('urlnote-fc-styles');
+  if (!st) {
+    st = document.createElement('style');
+    st.id = 'urlnote-fc-styles';
+    document.head.appendChild(st);
+  }
+  st.textContent += '.fc-' + hex + '{color:#' + hex + '}';
+};
+// 加载/重新渲染(回显、切文件、预览)时扫描新出现的 fc- span 补规则
+window.__urlnoteFcObserver = new MutationObserver(function (muts) {
+  for (const m of muts) {
+    for (const n of m.addedNodes) {
+      if (n.nodeType !== 1) continue;
+      const hit = [];
+      if (n.matches && n.matches('span[class^="fc-"]')) hit.push(n);
+      if (n.querySelectorAll) {
+        const q = n.querySelectorAll('span[class^="fc-"]');
+        for (let i = 0; i < q.length; i++) hit.push(q[i]);
+      }
+      for (const el of hit) {
+        const cls = (el.className || '').match(/(?:^|\s)fc-([0-9a-fA-F]{6})(?:\s|$)/);
+        if (cls) window.__urlnoteEnsureFc(cls[1]);
+      }
+    }
+  }
+});
+window.__urlnoteFcObserver.observe(document.body, { childList: true, subtree: true });
+
 window.__urlnoteStash = function () {
   const sel = window.getSelection();
   window.__urlnoteSavedRange =
@@ -19,6 +56,9 @@ window.__urlnoteColorize = function (color, saved) {
   let range =
     sel && sel.rangeCount && !sel.isCollapsed ? sel.getRangeAt(0) : saved || null;
   if (!range) return false;
+  const hex = String(color).replace('#', '').slice(0, 6).toLowerCase();
+  if (!/^[0-9a-f]{6}$/.test(hex)) return false;
+  window.__urlnoteEnsureFc(hex);
   const anchor = range.commonAncestorContainer;
   const startEl = anchor.nodeType === 3 ? anchor.parentElement : anchor;
   const wysiwyg = startEl && startEl.closest ? startEl.closest('.vditor-wysiwyg') : null;
@@ -44,7 +84,7 @@ window.__urlnoteColorize = function (color, saved) {
     r.setStart(t, s0);
     r.setEnd(t, e0);
     const span = document.createElement('span');
-    span.setAttribute('style', 'color:' + color);
+    span.setAttribute('class', 'fc-' + hex);
     try { r.surroundContents(span); }
     catch (e) { const f = r.extractContents(); span.appendChild(f); r.insertNode(span); }
     changed = true;
@@ -69,8 +109,10 @@ window.__urlnoteUncolor = function (saved) {
   const walker = document.createTreeWalker(wysiwyg, NodeFilter.SHOW_ELEMENT, {
     acceptNode: function (el) {
       if (!range.intersectsNode(el)) return NodeFilter.FILTER_REJECT;
-      const st = el.getAttribute('style') || '';
-      if (el.tagName === 'SPAN' && /(?:^|;)\s*color\s*:/.test(st))
+      if (el.tagName !== 'SPAN') return NodeFilter.FILTER_REJECT;
+      if (/(?:^|\s)fc-[0-9a-fA-F]{6}(?:\s|$)/.test(el.className || ''))
+        return NodeFilter.FILTER_ACCEPT;
+      if (/(?:^|;)\s*color\s*:/.test(el.getAttribute('style') || ''))
         return NodeFilter.FILTER_ACCEPT;
       return NodeFilter.FILTER_REJECT;
     },
