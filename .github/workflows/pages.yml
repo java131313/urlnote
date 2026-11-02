@@ -28,6 +28,8 @@ env:
   API_BASE: ${{ vars.API_BASE }}
   # 项目页面路径前缀（仓库名）。若用 <用户>.github.io 仓库挂根路径，改为空字符串。
   BASE_PATH: /urlnote
+  # 提示语言选择器默认语言（如 zh_cn）；不设则为「自动」
+  SUGGEST_LANG: ${{ vars.SUGGEST_LANG }}
   # Sealos 对象存储（S3）。AK/SK 用 Secrets 存放；即使不设也能构建，
   # /oss 页只会显示“未配置”。注意：它们会被编译进公开的 WASM。
   OSS_ENDPOINT: objectstorageapi.bja.sealos.run

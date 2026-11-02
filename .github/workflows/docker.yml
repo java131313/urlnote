@@ -23,6 +23,8 @@ env:
   # Cloudflare Worker 地址，在仓库 Settings → Secrets and variables →
   # Actions → Variables 中设置（与 Pages 工作流共用同一个变量）。
   API_BASE: ${{ vars.API_BASE }}
+  # 提示语言选择器默认语言（如 zh_cn）；不设则为「自动」
+  SUGGEST_LANG: ${{ vars.SUGGEST_LANG }}
   # Sealos 对象存储（S3），同 Pages 工作流。AK/SK 用 Secrets；不设也能
   # 构建，/oss 页只显示“未配置”。注意：它们会被编译进公开的 WASM。
   OSS_ENDPOINT: objectstorageapi.bja.sealos.run

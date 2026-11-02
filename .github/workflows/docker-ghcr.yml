@@ -1,19 +1,18 @@
-# 构建并推送两个镜像到 GitHub Packages (ghcr.io):
-#   ghcr.io/java131313/urlnote-frontend  Leptos WASM 前端 + 词表/IPADIC 词典(nginx 托管)
-#   ghcr.io/java131313/urlnote-server    urlnote-server 纯 API(+ IPADIC,日文分词)
+# 构建并推送后端镜像到 GitHub Packages:
+#   ghcr.io/java131313/urlnote-server  urlnote-server 纯 API(+ IPADIC,日文分词)
+# 前端镜像由 docker.yml 构建(带 OSS 编译期凭据,勿与本 workflow 重复)
 #
 # 运行时的连接配置全部是环境变量(Sealos / docker run 均可配):
 #   前端镜像构建期: API_BASE=后端地址(可选 BASE_PATH,子路径部署用)
 #   后端镜像运行时: MONGODB_URI / MONGO_DB / ADMIN_PASSWORD / CORS_ORIGINS / PORT
 # 词典一次性导入(幂等):
 #   docker run --rm ghcr.io/java131313/urlnote-server:latest /app/urlnote-server seed
-name: build-and-push-ghcr
+name: build-and-push-server-ghcr
 
 on:
   push:
     branches: [go-back]
     paths:
-      - "Dockerfile.frontend"
       - "Dockerfile.server"
       - "rust/**"
       - ".github/workflows/docker-ghcr.yml"
@@ -24,41 +23,6 @@ permissions:
   packages: write
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: login to ghcr.io
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: image tags
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}-frontend
-          tags: |
-            type=raw,value=latest
-            type=sha
-      - name: build & push frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile.frontend
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          # API_BASE:后端地址;BASE_PATH:子路径部署(如 /urlnote),默认根路径
-          build-args: |
-            API_BASE=${{ vars.API_BASE }}
-            BASE_PATH=${{ vars.BASE_PATH }}
-            SUGGEST_LANG=${{ vars.SUGGEST_LANG }}
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,mode=max,scope=frontend
-
   server:
     runs-on: ubuntu-latest
     steps:
