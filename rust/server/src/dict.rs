@@ -261,9 +261,11 @@ pub async fn create_word(
             .await
             .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, &e))?,
     };
+    // 注意:不要写 key: null —— key 上的唯一稀疏索引把显式 null 当值,
+    // 第二个无 key 的组会撞 E11000。用 replace upsert,组文档只含 _id
     st.col("dict_group")
-        .update_one(doc! { "_id": group_id }, doc! { "$setOnInsert": { "key": Bson::Null } })
-        .with_options(mongodb::options::UpdateOptions::builder().upsert(true).build())
+        .replace_one(doc! { "_id": group_id }, doc! { "_id": group_id })
+        .with_options(mongodb::options::ReplaceOptions::builder().upsert(true).build())
         .await
         .map_err(|e| json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()))?;
 
