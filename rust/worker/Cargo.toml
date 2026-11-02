@@ -22,3 +22,4 @@ url = "2"
 jieba-rs = "0.6"
 vibrato = { version = "0.5", default-features = false }
 ruzstd = "0.7"
+pdf-extract = "0.7"

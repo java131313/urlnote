@@ -70,8 +70,23 @@ CREATE TABLE IF NOT EXISTS notes_mark (
 	id                TEXT PRIMARY KEY,
 	content           TEXT NOT NULL,
 	source_updated_at TEXT NOT NULL,
+	comments          TEXT NOT NULL DEFAULT '[]',
 	updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- 批注(锚定文字):文档库文件的批注;便签的批注存在 notes_mark.comments
+CREATE TABLE IF NOT EXISTS comments (
+	id         TEXT PRIMARY KEY,
+	doc        TEXT NOT NULL,
+	quote      TEXT NOT NULL DEFAULT '',
+	text       TEXT NOT NULL DEFAULT '',
+	author     TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	start      INTEGER NOT NULL DEFAULT 0,
+	"end"      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_doc ON comments(doc);
 
 -- 四语词典:「语言表 + 词义组 + 词表」结构。
 --   dict_lang   语言类型(code 唯一,含角标),可继续扩充

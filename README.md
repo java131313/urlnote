@@ -160,6 +160,12 @@ make dev             # wrangler dev，http://localhost:8787
 | POST | `/api/dict/words` | 新增词 `{lang,word,group_id?,trans?}`（admin；不带 group_id 时新建词义组，`trans` 可附带其它语言译词） |
 | PUT | `/api/dict/words/{id}` | 改词/移动到其它词义组（admin） |
 | DELETE | `/api/dict/words/{id}` | 删除词（空组自动清理）（admin） |
+| GET | `/api/comments?doc=` | 文档库批注列表（doc 为 `oss/<key>`；便签请用 note 端点） |
+| POST | `/api/comments` | 添加批注 `{id,doc,quote,text,start,end}`（id 客户端生成 ObjectId hex，锚点 `<a id="cm-<id>" class="cmt">` 先入正文） |
+| DELETE | `/api/comments/{id}` | 删除批注（作者或 admin） |
+| GET/POST | `/api/note/{id}/comments` | 便签批注（存 notes_mark.comments，与标记副本同行） |
+| DELETE | `/api/note/{id}/comments/{cid}` | 删除便签批注 |
+| POST | `/api/pdf2md` | PDF → markdown（multipart `file`，分页 `---`，8MB 上限；文档库 PDF 预览用） |
 | POST | `/api/upload` | 图片上传（multipart 字段 `file[]`），返回 Vditor 协议 `{code,data:{succMap,errFiles}}` |
 | GET | `/i/{name}` | 提供已上传图片（需登录；`Cache-Control: immutable`） |
 

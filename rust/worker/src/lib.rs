@@ -6,7 +6,7 @@
 //! KV plan only affords 1k writes/day. KV remains solely for image blobs.
 
 use lru::LruCache;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use shared::*;
 use std::cell::RefCell;
@@ -158,6 +158,19 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         (Method::Get, ["api", "mark", id]) => get_mark(req, &env, id).await,
         (Method::Post, ["api", "search", "reindex"]) => reindex_search(&req, &env).await,
         (Method::Get, ["api", "dict", "lookup"]) => dict_lookup(&req, &env).await,
+        (Method::Get, ["api", "comments"]) => list_comments(&req, &env).await,
+        (Method::Post, ["api", "comments"]) => create_comment(req, &env).await,
+        (Method::Delete, ["api", "comments", id]) => delete_comment(&req, &env, id).await,
+        (Method::Get, ["api", "note", id, "comments"]) => {
+            list_note_comments(&req, &env, id).await
+        }
+        (Method::Post, ["api", "note", id, "comments"]) => {
+            create_note_comment(req, &env, id).await
+        }
+        (Method::Delete, ["api", "note", id, "comments", cid]) => {
+            delete_note_comment(&req, &env, id, cid).await
+        }
+        (Method::Post, ["api", "pdf2md"]) => pdf_to_md(req, &env).await,
         (Method::Get, ["api", "dict", "langs"]) => dict_langs(&req, &env).await,
         (Method::Post, ["api", "dict", "langs"]) => create_lang(req, &env).await,
         (Method::Get, ["api", "dict", "words"]) => list_words(&req, &env).await,
@@ -1050,6 +1063,340 @@ async fn search_notes(req: &Request, env: &Env) -> Result<Response> {
     })
     .unwrap();
     json_response(200, payload, None)
+}
+
+// ---- anchored comments (批注) ----
+//
+// 全局 comments 表服务文档库(doc = "oss/<key>");便签批注存在
+// notes_mark.comments(JSON 数组,与 server/MongoDB 版同构)。
+
+#[derive(Deserialize)]
+struct CommentRow {
+    id: String,
+    doc: String,
+    quote: String,
+    text: String,
+    author: String,
+    created_at: String,
+    start: i64,
+    end: i64,
+}
+
+#[derive(Clone, Deserialize, Serialize, Default)]
+struct NoteCommentEntry {
+    #[serde(default)]
+    _id: String,
+    #[serde(default)]
+    quote: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    author: String,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    start: usize,
+    #[serde(default)]
+    end: usize,
+}
+
+fn hex12() -> String {
+    to_hex(&rand_bytes(12))
+}
+
+/// 与 D1 datetime('now') 同格式 "YYYY-MM-DD HH:MM:SS" UTC
+fn now_str() -> String {
+    let d = js_sys::Date::new_0();
+    format!(
+        "{}-{:02}-{:02} {:02}:{:02}:{:02}",
+        d.get_utc_full_year() as i32,
+        d.get_utc_month() + 1,
+        d.get_utc_date(),
+        d.get_utc_hours(),
+        d.get_utc_minutes(),
+        d.get_utc_seconds(),
+    )
+}
+
+fn row_to_item(r: CommentRow) -> CommentItem {
+    CommentItem {
+        id: r.id,
+        doc: r.doc,
+        quote: r.quote,
+        text: r.text,
+        author: r.author,
+        created_at: r.created_at,
+        start: r.start as usize,
+        end: r.end as usize,
+    }
+}
+
+async fn list_comments(req: &Request, env: &Env) -> Result<Response> {
+    require_user!(req, env);
+    let doc = query_param(req, "doc").unwrap_or_default();
+    if !valid_doc_ref(&doc) {
+        return json_error(400, "bad request");
+    }
+    let rows = env
+        .d1("DB")?
+        .prepare(
+            "SELECT id, doc, quote, text, author, created_at, start, \"end\"
+             FROM comments WHERE doc = ?1 ORDER BY created_at",
+        )
+        .bind(&[JsValue::from(doc)])?
+        .all()
+        .await?
+        .results::<CommentRow>()?;
+    let payload = serde_json::to_vec(&CommentList {
+        comments: rows.into_iter().map(row_to_item).collect(),
+    })
+    .unwrap();
+    json_response(200, payload, None)
+}
+
+async fn create_comment(mut req: Request, env: &Env) -> Result<Response> {
+    let user = require_user!(&req, env);
+    let body: CommentUpsert = match req.json().await {
+        Ok(b) => b,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    if !valid_doc_ref(&body.doc) || body.text.trim().is_empty() {
+        return json_error(400, "bad request");
+    }
+    let id = if body.id.len() == 24 && body.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        body.id
+    } else {
+        hex12()
+    };
+    let quote: String = body.quote.chars().take(200).collect();
+    let text: String = body.text.trim().chars().take(2000).collect();
+    // D1 拒绝 BigInt 绑定,start/end 用 f64
+    env.d1("DB")?
+        .prepare(
+            "INSERT INTO comments (id, doc, quote, text, author, created_at, start, \"end\")
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP, ?6, ?7)",
+        )
+        .bind(&[
+            JsValue::from(id.as_str()),
+            JsValue::from(body.doc.as_str()),
+            JsValue::from(quote.as_str()),
+            JsValue::from(text.as_str()),
+            JsValue::from(user.as_str()),
+            JsValue::from(body.start as f64),
+            JsValue::from(body.end as f64),
+        ])?
+        .run()
+        .await?;
+    let item = CommentItem {
+        id,
+        doc: body.doc,
+        quote,
+        text,
+        author: user,
+        created_at: now_str(),
+        start: body.start,
+        end: body.end,
+    };
+    let payload = serde_json::to_vec(&item).unwrap();
+    json_response(200, payload, None)
+}
+
+async fn delete_comment(req: &Request, env: &Env, id: &str) -> Result<Response> {
+    let user = require_user!(req, env);
+    let db = env.d1("DB")?;
+    let row = db
+        .prepare("SELECT author FROM comments WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<SessionUserRow>(None)
+        .await?;
+    let allowed = row
+        .map(|r| r.username == user || is_admin(&user))
+        .unwrap_or(false);
+    if !allowed {
+        return json_error(403, "forbidden");
+    }
+    db.prepare("DELETE FROM comments WHERE id = ?1")
+        .bind(&[JsValue::from(id)])?
+        .run()
+        .await?;
+    json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
+}
+
+#[derive(Deserialize)]
+struct MarkCommentsRow {
+    comments: String,
+}
+
+fn parse_note_comments(id: &str, text: &str) -> Vec<CommentItem> {
+    serde_json::from_str::<Vec<NoteCommentEntry>>(text)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| CommentItem {
+            id: e._id,
+            doc: format!("note/{id}"),
+            quote: e.quote,
+            text: e.text,
+            author: e.author,
+            created_at: e.created_at,
+            start: e.start,
+            end: e.end,
+        })
+        .collect()
+}
+
+async fn list_note_comments(req: &Request, env: &Env, id: &str) -> Result<Response> {
+    require_user!(req, env);
+    if !valid_note_id(id) {
+        return json_error(400, "bad request");
+    }
+    let row = env
+        .d1("DB")?
+        .prepare("SELECT comments FROM notes_mark WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<MarkCommentsRow>(None)
+        .await?;
+    let comments = row
+        .map(|r| parse_note_comments(id, &r.comments))
+        .unwrap_or_default();
+    let payload = serde_json::to_vec(&CommentList { comments }).unwrap();
+    json_response(200, payload, None)
+}
+
+async fn create_note_comment(mut req: Request, env: &Env, id: &str) -> Result<Response> {
+    let user = require_user!(&req, env);
+    if !valid_note_id(id) {
+        return json_error(400, "bad request");
+    }
+    if !can_edit_now(env, &user).await {
+        return json_error(403, "edit locked");
+    }
+    let body: CommentUpsert = match req.json().await {
+        Ok(b) => b,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    if body.text.trim().is_empty() {
+        return json_error(400, "bad request");
+    }
+    // 没有标记副本时先按当前正文生成一个(空 content 会让前端状态异常);
+    // generate 的 ON CONFLICT 只更新 content/source_updated_at,不动 comments
+    let db = env.d1("DB")?;
+    let has = db
+        .prepare("SELECT comments FROM notes_mark WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<MarkCommentsRow>(None)
+        .await?;
+    if has.is_none() {
+        let _ = mark::generate(env, id).await;
+    }
+    let cur = db
+        .prepare("SELECT comments FROM notes_mark WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<MarkCommentsRow>(None)
+        .await?
+        .map(|r| r.comments)
+        .unwrap_or_else(|| "[]".to_string());
+    let mut entries: Vec<NoteCommentEntry> =
+        serde_json::from_str(&cur).unwrap_or_default();
+    let cid = if body.id.len() == 24 && body.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        body.id
+    } else {
+        hex12()
+    };
+    let entry = NoteCommentEntry {
+        _id: cid.clone(),
+        quote: body.quote.chars().take(200).collect(),
+        text: body.text.trim().chars().take(2000).collect(),
+        author: user.clone(),
+        created_at: now_str(),
+        start: body.start,
+        end: body.end,
+    };
+    entries.push(entry.clone());
+    let saved = serde_json::to_string(&entries).unwrap();
+    db.prepare("UPDATE notes_mark SET comments = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1")
+        .bind(&[JsValue::from(id), JsValue::from(saved)])?
+        .run()
+        .await?;
+    let item = CommentItem {
+        id: cid,
+        doc: format!("note/{id}"),
+        quote: entry.quote,
+        text: entry.text,
+        author: entry.author,
+        created_at: entry.created_at,
+        start: entry.start,
+        end: entry.end,
+    };
+    let payload = serde_json::to_vec(&item).unwrap();
+    json_response(200, payload, None)
+}
+
+async fn delete_note_comment(req: &Request, env: &Env, id: &str, cid: &str) -> Result<Response> {
+    let user = require_user!(req, env);
+    if !valid_note_id(id) {
+        return json_error(400, "bad request");
+    }
+    let db = env.d1("DB")?;
+    let cur = db
+        .prepare("SELECT comments FROM notes_mark WHERE id = ?1 LIMIT 1")
+        .bind(&[JsValue::from(id)])?
+        .first::<MarkCommentsRow>(None)
+        .await?
+        .map(|r| r.comments)
+        .unwrap_or_else(|| "[]".to_string());
+    let entries: Vec<NoteCommentEntry> = serde_json::from_str(&cur).unwrap_or_default();
+    let allowed = entries
+        .iter()
+        .any(|e| e._id == cid && (e.author == user || is_admin(&user)));
+    if !allowed {
+        return json_error(403, "forbidden");
+    }
+    let kept: Vec<&NoteCommentEntry> = entries.iter().filter(|e| e._id != cid).collect();
+    let saved = serde_json::to_string(&kept).unwrap();
+    db.prepare("UPDATE notes_mark SET comments = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1")
+        .bind(&[JsValue::from(id), JsValue::from(saved)])?
+        .run()
+        .await?;
+    json_response(200, serde_json::to_vec(&OkResponse { ok: true }).unwrap(), None)
+}
+
+/// POST /api/pdf2md — PDF 二进制 → markdown(pdf-extract 纯 Rust,与 server 版同实现)
+async fn pdf_to_md(mut req: Request, env: &Env) -> Result<Response> {
+    require_user!(&req, env);
+    let form = match req.form_data().await {
+        Ok(f) => f,
+        Err(_) => return json_error(400, "bad request"),
+    };
+    for field in ["file", "file[]"] {
+        let Some(entries) = form.get_all(field) else { continue };
+        for entry in entries {
+            let FormEntry::File(f) = entry else { continue };
+            if f.size() > MAX_UPLOAD_BYTES {
+                return json_error(400, "bad request");
+            }
+            let bytes = match f.bytes().await {
+                Ok(b) if !b.is_empty() => b,
+                _ => return json_error(400, "bad request"),
+            };
+            let text = match pdf_extract::extract_text_from_mem(&bytes) {
+                Ok(t) => t,
+                Err(e) => return json_error(400, &format!("PDF 解析失败: {e}")),
+            };
+            let md = if text.contains('\u{c}') {
+                text.split('\u{c}')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n---\n\n")
+            } else {
+                text.trim().to_string()
+            };
+            let md: String = md.chars().take(200_000).collect();
+            let payload = serde_json::to_vec(&PosDocResponse { markdown: md }).unwrap();
+            return json_response(200, payload, None);
+        }
+    }
+    json_error(400, "bad request")
 }
 
 // ---- four-language dictionary ----
