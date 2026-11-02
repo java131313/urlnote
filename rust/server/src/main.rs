@@ -143,6 +143,10 @@ fn api_router(st: AppState) -> Router {
         .route("/api/edit-requests/handle", post(misc::handle_edit_request))
         .route("/api/search", get(notes::search_notes))
         .route("/api/search/reindex", post(notes::reindex_search))
+        .route(
+            "/api/pdf2md",
+            post(misc::pdf_to_md).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + UPLOAD_HEADROOM)),
+        )
         .route("/api/analyze", post(nlp::analyze_text))
         .route("/api/pos", post(nlp::pos_tag))
         .route("/api/pos/doc", post(nlp::pos_document))

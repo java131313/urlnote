@@ -12,8 +12,10 @@
 
 use crate::suggest::{LangSelect, Suggest, SuggestPanel};
 use crate::vditor::VditorEditor;
-use crate::{current_time, document, window, BASE_PATH};
-use shared::{valid_color, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
+use crate::{api_url, current_time, document, window, BASE_PATH};
+use gloo_net::http::Request;
+use shared::{valid_color, PosDocResponse, DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE};
+use web_sys::RequestCredentials;
 use gloo_events::EventListener;
 use hmac::{Hmac, Mac};
 use leptos::html::Div;
@@ -630,6 +632,8 @@ struct OssCtx {
     // editor display settings (persisted in a per-file sidecar object)
     font_size: RwSignal<i64>,
     color: RwSignal<String>,
+    /// 图片预览的 object URL(点亮浮层时 Some)
+    preview_url: RwSignal<Option<String>>,
     suggest: Suggest,
 }
 
@@ -764,6 +768,157 @@ async fn rename_file_key(old_key: &str, new_key: &str) -> Result<(), String> {
         let _ = delete_object(&old_s).await;
     }
     Ok(())
+}
+
+pub async fn get_object_bytes(key: &str) -> Result<Vec<u8>, String> {
+    let path = format!("/{OSS_BUCKET}/{}", aws_uri_encode(key, false));
+    let sig = sign_request("GET", &path, &[], b"", now_ms());
+    let url = format!("https://{OSS_ENDPOINT}{path}");
+    let resp = apply_sig(gloo_net::http::Request::get(&url), &sig)
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    match resp.status() {
+        200 => resp.binary().await.map_err(|e| format!("读取失败: {e}")),
+        404 => Err("文件不存在".to_string()),
+        st => Err(format!("下载失败 (HTTP {st})")),
+    }
+}
+
+fn file_kind(name: &str) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" => "image",
+        "pdf" => "pdf",
+        _ => "text",
+    }
+}
+
+fn file_icon(name: &str) -> &'static str {
+    match file_kind(name) {
+        "image" => "🖼️",
+        "pdf" => "📕",
+        _ => "📄",
+    }
+}
+
+/// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开
+fn open_entry(key: String, name: String) {
+    match file_kind(&name) {
+        "image" => preview_image(key, name),
+        "pdf" => open_pdf_as_md(key, name),
+        _ => open_file(key, name),
+    }
+}
+
+fn image_mime(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        _ => "image/jpeg",
+    }
+}
+
+fn preview_image(key: String, name: String) {
+    let ctx = ctx();
+    ctx.status.set(format!("加载 {name}…"));
+    spawn_local(async move {
+        match get_object_bytes(&key).await {
+            Ok(bytes) => {
+                let arr = js_sys::Uint8Array::from(&bytes[..]);
+                let parts = js_sys::Array::new();
+                parts.push(&arr);
+                let bag = web_sys::BlobPropertyBag::new();
+                bag.set_type(image_mime(&name));
+                match web_sys::Blob::new_with_u8_array_sequence_and_options(&parts.into(), &bag)
+                    .ok()
+                    .and_then(|b| web_sys::Url::create_object_url_with_blob(&b).ok())
+                {
+                    Some(url) => {
+                        close_preview();
+                        ctx.preview_url.set(Some(url));
+                        ctx.status.set(String::new());
+                    }
+                    None => ctx.status.set("预览创建失败".to_string()),
+                }
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+fn close_preview() {
+    let ctx = ctx();
+    let prev = ctx.preview_url.write().take();
+    if let Some(u) = prev {
+        let _ = web_sys::Url::revoke_object_url(&u);
+    }
+}
+
+/// PDF → 后端转 markdown → 存为同名 .md(已存在则加序号)→ 在编辑器打开
+fn open_pdf_as_md(key: String, name: String) {
+    let ctx = ctx();
+    ctx.status.set(format!("转换 {name}…"));
+    spawn_local(async move {
+        let bytes = match get_object_bytes(&key).await {
+            Ok(b) => b,
+            Err(e) => return ctx.status.set(e),
+        };
+        let md = match convert_pdf(&bytes, &name).await {
+            Ok(m) => m,
+            Err(e) => return ctx.status.set(e),
+        };
+        // 目标 key:去掉 .pdf 后缀 + .md;冲突时 -1/-2…
+        let stem = key.strip_suffix(".pdf").unwrap_or(&key);
+        let stem = stem.strip_suffix(".PDF").unwrap_or(stem);
+        let mut target = format!("{stem}.md");
+        for i in 1..50 {
+            if !object_exists(&target).await {
+                break;
+            }
+            target = format!("{stem}-{i}.md");
+        }
+        match put_object(&target, &md).await {
+            Ok(()) => {
+                let new_name = target.rsplit('/').next().unwrap_or(&target).to_string();
+                ctx.status.set(format!("已转换 → {new_name}"));
+                open_file(target, new_name);
+                refresh_tree();
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
+/// 后端 PDF → markdown(POST /api/pdf2md, multipart 字段 file)
+async fn convert_pdf(bytes: &[u8], name: &str) -> Result<String, String> {
+    let arr = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::new();
+    parts.push(&arr);
+    let bag = web_sys::BlobPropertyBag::new();
+    bag.set_type("application/pdf");
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts.into(), &bag)
+        .map_err(|_| "请求构建失败".to_string())?;
+    let form = web_sys::FormData::new().map_err(|_| "请求构建失败".to_string())?;
+    form.append_with_blob("file", &blob)
+        .map_err(|_| "请求构建失败".to_string())?;
+    let resp = Request::post(&api_url("/api/pdf2md"))
+        .credentials(RequestCredentials::Include)
+        .body(form)
+        .map_err(|e| format!("请求构建失败: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("网络错误: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("PDF 转换失败 (HTTP {})", resp.status()));
+    }
+    let out = resp
+        .json::<PosDocResponse>()
+        .await
+        .map_err(|_| "转换响应解析失败".to_string())?;
+    Ok(out.markdown)
 }
 
 fn open_file(key: String, name: String) {
@@ -1057,6 +1212,7 @@ fn TreeDir(prefix: String) -> AnyView {
                             let key_del = f.key.clone();
                             let key_active = f.key.clone();
                             let label = f.name.clone();
+                            let icon = file_icon(&label);
                             let ctx2 = ctx;
                             view! {
                                 <div
@@ -1064,9 +1220,9 @@ fn TreeDir(prefix: String) -> AnyView {
                                     class:oss-active=move || ctx2.current.get().as_deref() == Some(key_active.as_str())
                                 >
                                     <button type="button" class="oss-open"
-                                        on:click=move |_| open_file(key_open.clone(), name_open.clone())
+                                        on:click=move |_| open_entry(key_open.clone(), name_open.clone())
                                     >
-                                        <span class="oss-ticon">"📄"</span>
+                                        <span class="oss-ticon">{icon}</span>
                                         <span class="oss-tname">{label}</span>
                                     </button>
                                     <span class="oss-tact">
@@ -1108,6 +1264,7 @@ pub fn OssView() -> impl IntoView {
         status: RwSignal::new(String::new()),
         font_size: RwSignal::new(DEFAULT_FONT_SIZE),
         color: RwSignal::new(String::new()),
+        preview_url: RwSignal::new(None),
         suggest: Suggest::new(),
     };
     CTX.with(|c| *c.borrow_mut() = Some(ctx));
@@ -1247,15 +1404,16 @@ pub fn OssView() -> impl IntoView {
                                 let key_del = f.key.clone();
                                 let key_active = f.key.clone();
                                 let label = f.name.clone();
+                                let icon = file_icon(&label);
                                 view! {
                                     <div
                                         class="oss-trow oss-tfile"
                                         class:oss-active=move || ctx.current.get().as_deref() == Some(key_active.as_str())
                                     >
                                         <button type="button" class="oss-open"
-                                            on:click=move |_| open_file(key_open.clone(), name_open.clone())
+                                            on:click=move |_| open_entry(key_open.clone(), name_open.clone())
                                         >
-                                            <span class="oss-ticon">"📄"</span>
+                                            <span class="oss-ticon">{icon}</span>
                                             <span class="oss-tname">{label}</span>
                                         </button>
                                         <span class="oss-tact">
@@ -1342,6 +1500,18 @@ pub fn OssView() -> impl IntoView {
                         }
                     ></div>
                     <SuggestPanel sug=ctx.suggest insert=insert/>
+                    <Show when=move || ctx.preview_url.get().is_some()>
+                        <div
+                            class="oss-lightbox"
+                            title="点击关闭"
+                            on:click=move |_| close_preview()
+                        >
+                            <img
+                                src=move || ctx.preview_url.get().unwrap_or_default()
+                                alt="preview"
+                            />
+                        </div>
+                    </Show>
                 </main>
             </div>
         </div>

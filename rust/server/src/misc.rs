@@ -352,6 +352,46 @@ pub async fn upload(
     ))
 }
 
+/// POST /api/pdf2md — PDF 二进制 → markdown 文本(文档库 PDF 预览用)。
+/// 每页之间用 `\n\n---\n\n` 分隔,纯文本抽取(图片/版式不保留)。
+pub async fn pdf_to_md(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    require_user(&st, &headers).await?;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() != Some("file") {
+            continue;
+        }
+        let data = field
+            .bytes()
+            .await
+            .map_err(|_| json_error(StatusCode::BAD_REQUEST, "bad request"))?;
+        if data.is_empty() || data.len() > MAX_UPLOAD_BYTES {
+            return Err(json_error(StatusCode::BAD_REQUEST, "bad request"));
+        }
+        let text = pdf_extract::extract_text_from_mem(&data)
+            .map_err(|e| json_error(StatusCode::BAD_REQUEST, &format!("PDF 解析失败: {e}")))?;
+        // 页分隔符归一:pdf-extract 用 \u{c} 分页(旧版为纯 \n\n)
+        let md = if text.contains('\u{c}') {
+            text.split('\u{c}')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n---\n\n")
+        } else {
+            text.trim().to_string()
+        };
+        let md: String = md.chars().take(200_000).collect();
+        return Ok(json_vec(
+            StatusCode::OK,
+            serde_json::to_vec(&PosDocResponse { markdown: md }).unwrap(),
+        ));
+    }
+    Err(json_error(StatusCode::BAD_REQUEST, "bad request"))
+}
+
 const IMAGE_EXT_MIME: [(&str, &str); 5] = [
     (".png", "image/png"),
     (".jpg", "image/jpeg"),
