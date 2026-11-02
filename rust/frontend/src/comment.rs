@@ -92,6 +92,11 @@ impl CommentCtl {
         self.refresh();
     }
 
+    /// 便签的批注存 notes_mark(comments 数组);其余(文档库)走 comments 集合
+    fn is_note_doc(doc: &str) -> bool {
+        doc.starts_with("note/")
+    }
+
     pub fn refresh(&self) {
         let doc = self.doc.get();
         if doc.is_empty() {
@@ -99,8 +104,14 @@ impl CommentCtl {
         }
         let c = *self;
         spawn_local(async move {
-            let enc: String = js_sys::encode_uri_component(&doc).into();
-            let Ok(resp) = Request::get(&api_url(&format!("/api/comments?doc={enc}")))
+            let url = if Self::is_note_doc(&doc) {
+                let enc: String = js_sys::encode_uri_component(doc.strip_prefix("note/").unwrap_or("")).into();
+                api_url(&format!("/api/note/{enc}/comments"))
+            } else {
+                let enc: String = js_sys::encode_uri_component(&doc).into();
+                api_url(&format!("/api/comments?doc={enc}"))
+            };
+            let Ok(resp) = Request::get(&url)
                 .credentials(RequestCredentials::Include)
                 .send()
                 .await
@@ -150,7 +161,14 @@ impl CommentCtl {
                 start,
                 end,
             };
-            let r = Request::post(&api_url("/api/comments"))
+            let url = if Self::is_note_doc(&doc) {
+                let enc: String =
+                    js_sys::encode_uri_component(doc.strip_prefix("note/").unwrap_or("")).into();
+                api_url(&format!("/api/note/{enc}/comments"))
+            } else {
+                api_url("/api/comments")
+            };
+            let r = Request::post(&url)
                 .credentials(RequestCredentials::Include)
                 .json(&body);
             let Ok(resp) = r.unwrap().send().await else { return };
@@ -166,9 +184,17 @@ impl CommentCtl {
     }
 
     pub fn remove(&self, id: String) {
+        let doc = self.doc.get();
         let c = *self;
         spawn_local(async move {
-            let Ok(resp) = Request::delete(&api_url(&format!("/api/comments/{id}")))
+            let url = if Self::is_note_doc(&doc) {
+                let enc: String =
+                    js_sys::encode_uri_component(doc.strip_prefix("note/").unwrap_or("")).into();
+                api_url(&format!("/api/note/{enc}/comments/{id}"))
+            } else {
+                api_url(&format!("/api/comments/{id}"))
+            };
+            let Ok(resp) = Request::delete(&url)
                 .credentials(RequestCredentials::Include)
                 .send()
                 .await

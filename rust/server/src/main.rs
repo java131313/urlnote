@@ -160,6 +160,14 @@ fn api_router(st: AppState) -> Router {
                 .get(nlp::get_mark),
         )
         .route("/api/comments", get(comments::list_comments).post(comments::create_comment))
+        .route(
+            "/api/note/{id}/comments",
+            get(comments::list_note_comments).post(comments::create_note_comment),
+        )
+        .route(
+            "/api/note/{id}/comments/{cid}",
+            axum::routing::delete(comments::delete_note_comment),
+        )
         .route("/api/comments/{id}", axum::routing::delete(comments::delete_comment))
         .route("/api/dict/lookup", get(dict::dict_lookup))
         .route("/api/dict/langs", get(dict::dict_langs).post(dict::create_lang))
