@@ -1341,6 +1341,21 @@ header a:hover {
   color: #999;
 }
 
+/* 批注跳转后的闪烁高亮 */
+.comment-flash {
+  position: fixed;
+  z-index: 400;
+  pointer-events: none;
+  border-radius: 4px;
+  background: rgba(255, 200, 60, 0.5);
+  animation: comment-flash-fade 1.3s ease-out forwards;
+}
+@keyframes comment-flash-fade {
+  0% { opacity: 1; }
+  70% { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+
 /* 图片预览浮层 */
 .oss-lightbox {
   position: fixed;

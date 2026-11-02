@@ -281,44 +281,67 @@ fn select_quote(content_root: &str, quote: &str, hint: usize) {
         .min_by_key(|&&i| i.abs_diff(hint))
         .unwrap_or(&occ[0]);
     let end = start + needle.len();
-    // 字符范围 → DOM Range(prefix UTF-16 和)
+    // 字符范围 → DOM Range:起点与终点分别落在各自所在的文本节点
+    // (支持跨节点/跨格式的引文),偏移按 UTF-16 前缀和换算
     let Some(sel) = window().get_selection().ok().flatten() else { return };
     let Ok(range) = web_sys::Range::new() else { return };
-    let mut placed = false;
+    let mut start_loc = None;
+    let mut end_loc = None;
     for (node, text, base) in &nodes {
-        let n_chars = text.chars().count();
-        let base = *base;
-        if start < base + n_chars || (start == base + n_chars && n_chars == 0) {
-            if end <= base + n_chars || end > base + n_chars {
-                // 跨节点:跳过,找能容纳 start 的节点
-            }
-            if start >= base && end <= base + n_chars {
-                let prefix: Vec<char> = text.chars().take(start - base).collect();
-                let mid: Vec<char> = text.chars().take(end - base).collect();
-                let u16_start: u32 = prefix.iter().map(|c| c.len_utf16() as u32).sum();
-                let u16_end: u32 = mid.iter().map(|c| c.len_utf16() as u32).sum();
-                if range.set_start(node, u16_start).is_ok()
-                    && range.set_end(node, u16_end).is_ok()
-                {
-                    sel.remove_all_ranges().ok();
-                    sel.add_range(&range).ok();
-                    placed = true;
-                }
-            }
-            if end <= base + n_chars {
-                break;
-            }
+        let n = text.chars().count();
+        if start_loc.is_none() && start >= *base && (start < *base + n || (start == *base && n == 0)) {
+            start_loc = Some((node, start - *base, text));
+        }
+        if end_loc.is_none() && end > *base && end <= *base + n {
+            end_loc = Some((node, end - *base, text));
+        }
+    }
+    let mut placed = false;
+    if let (Some((sn, so, st)), Some((en, eo, et))) = (start_loc, end_loc) {
+        let u16s: u32 = st.chars().take(so).map(|c| c.len_utf16() as u32).sum();
+        let u16e: u32 = et.chars().take(eo).map(|c| c.len_utf16() as u32).sum();
+        if range.set_start(sn, u16s).is_ok() && range.set_end(en, u16e).is_ok() {
+            sel.remove_all_ranges().ok();
+            sel.add_range(&range).ok();
+            placed = true;
         }
     }
     if placed {
-        // 编辑器内容区滚动到选中处(编辑器自身是滚动容器)
         let rect = range.get_bounding_client_rect();
+        // 编辑器内容区滚动到选中处(编辑器自身是滚动容器)
         if let Ok(Some(content)) = root.closest(".vditor-content") {
             let shift = rect.top() - 120.0;
             let next = (content.scroll_top() as f64 + shift).max(0.0);
             content.set_scroll_top(next as i32);
         }
+        flash_rect(&rect);
     }
+}
+
+/// 跳转后的黄色闪烁标记,1.3s 后自删
+fn flash_rect(rect: &web_sys::DomRect) {
+    let Some(doc) = window().document() else { return };
+    let Ok(m) = doc.create_element("div") else { return };
+    m.set_class_name("comment-flash");
+    let style = format!(
+        "left:{}px;top:{}px;width:{}px;height:{}px;",
+        rect.left().max(0.0),
+        rect.top().max(0.0),
+        rect.width().max(30.0),
+        rect.height().max(20.0),
+    );
+    let _ = m.set_attribute("style", &style);
+    let Some(body) = doc.body() else { return };
+    let _ = body.append_child(&m);
+    let cb = wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || {
+        m.remove();
+    });
+    let _ = window()
+        .set_timeout_with_callback_and_timeout_and_arguments_0(
+            cb.as_ref().unchecked_ref(),
+            1300,
+        )
+        .map(|_| cb.forget());
 }
 
 // ---- 侧栏组件 ----
