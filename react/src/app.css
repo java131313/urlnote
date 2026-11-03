@@ -63,6 +63,22 @@ body {
 .status { font-size: 12px; color: var(--muted); }
 .editor-host { flex: 1; min-height: 0; }
 
+/* 编辑区最大化(便签 .editor-page / 文档库 .oss-main):
+   固定定位盖过顶栏与侧栏,控制条保留可用;ESC 或按钮还原 */
+.editor-page.maximized,
+.oss-main.maximized {
+  position: fixed; inset: 0; z-index: 100; background: Canvas;
+}
+
+/* 文档库最大化时的浮动操作条(💾 保存/状态/还原,顶替被盖住的 oss-top) */
+.oss-floatbar {
+  position: absolute; bottom: 12px; right: 14px; z-index: 160;
+  display: flex; align-items: center; gap: 8px;
+  background: Canvas; border: 1px solid var(--border); border-radius: 10px;
+  padding: 6px 10px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+}
+.oss-floatbar .oss-status { min-width: 60px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 字号/颜色(CSS 变量,与 Rust 版同机制) */
 .editor-host .vditor { border: none; height: auto; font-family: -apple-system, 'SF Mono', Menlo, Consolas, monospace; color: var(--note-color, inherit); }
 .editor-host .vditor-content { flex: 1; min-height: 0; overflow-y: auto; zoom: var(--note-zoom, 1); }

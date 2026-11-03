@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import { api, Note } from './api';
+import { ExpandIcon, ShrinkIcon } from './icons';
 import { SuggestPanel, useSuggest } from './suggest';
 
 const DEFAULT_FONT = 16;
@@ -24,6 +25,7 @@ export function Editor(props: {
   const [fontSize, setFontSize] = useState(DEFAULT_FONT);
   const [color, setColor] = useState('');
   const [status, setStatus] = useState('');
+  const [max, setMax] = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('urlnote-suggest-lang') || (import.meta as any).env.VITE_SUGGEST_LANG || '');
 
   const markSaved = useCallback(
@@ -75,6 +77,17 @@ export function Editor(props: {
     else localStorage.removeItem('urlnote-suggest-lang');
   }, [lang]);
 
+  // 最大化时 ESC 还原(词典面板打开时 ESC 先关面板,不退出最大化:
+  // suggest 的捕获阶段处理器会 stopPropagation)
+  useEffect(() => {
+    if (!max) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMax(false);
+    };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [max]);
+
   // 初始化 Vditor(每个便签 id 复用实例,内容用 setValue 切换)
   useEffect(() => {
     if (!hostRef.current || vditorRef.current) return;
@@ -120,7 +133,10 @@ export function Editor(props: {
     });
     vditorRef.current = vd;
     return () => {
-      vditorRef.current?.destroy();
+      // Vditor 构造函数是异步初始化(this.vditor 在 i18n 等脚本加载完才挂上),
+      // 初始化完成前调 destroy 会读 undefined.element 崩溃——未完成实例随
+      // DOM 摘除丢弃即可
+      if (vditorRef.current && vditorRef.current.vditor) vditorRef.current.destroy();
       vditorRef.current = null;
       loadedFor.current = '';
     };
@@ -159,8 +175,16 @@ export function Editor(props: {
   const style = { '--note-zoom': zoom, ...(color ? { '--note-color': color } : {}) } as React.CSSProperties;
 
   return (
-    <div className="editor-page" style={style}>
+    <div className={'editor-page' + (max ? ' maximized' : '')} style={style}>
       <div className="settings-row">
+        <button
+          type="button"
+          className="tool"
+          title={max ? '还原编辑区(Esc)' : '最大化编辑区'}
+          onClick={() => setMax(!max)}
+        >
+          {max ? <ShrinkIcon /> : <ExpandIcon />}
+        </button>
         <input
           className="title-input"
           placeholder="标题"

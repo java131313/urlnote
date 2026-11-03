@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
 import { api } from '../api';
+import { ExpandIcon, ShrinkIcon } from '../icons';
 import { SuggestPanel, useSuggest } from '../suggest';
 import { OSS_ENABLED } from './config';
 import { createCommentTool, createFontColorTool } from './editorTools';
@@ -33,6 +34,11 @@ function validColor(c: string): boolean {
 
 function currentTime(): string {
   return new Date().toTimeString().slice(0, 8);
+}
+
+/// 状态栏只显示消息本体,不带 "Error: " 前缀
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 function sanitizeName(raw: string): string | null {
@@ -116,10 +122,21 @@ function OssPage() {
   const [lang, setLang] = useState(
     () => localStorage.getItem('urlnote-suggest-lang') || (import.meta as any).env.VITE_SUGGEST_LANG || '',
   );
+  const [max, setMax] = useState(false);
   useEffect(() => {
     if (lang) localStorage.setItem('urlnote-suggest-lang', lang);
     else localStorage.removeItem('urlnote-suggest-lang');
   }, [lang]);
+
+  // 最大化时 ESC 还原(词典面板打开时 ESC 先关面板,不退出最大化)
+  useEffect(() => {
+    if (!max) return;
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMax(false);
+    };
+    document.addEventListener('keydown', h);
+    return () => document.removeEventListener('keydown', h);
+  }, [max]);
 
   // 词典提示:接受词后文件变脏(与 Rust suggest_insert 一致)
   const suggest = useSuggest(
@@ -154,7 +171,7 @@ function OssPage() {
         bump();
       })
       .catch((e) => {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       });
   }, [bump]);
@@ -208,7 +225,7 @@ function OssPage() {
         getObject(settingsKey(key)).then(applySettings).catch(() => {});
       })
       .catch((e) => {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       });
   };
@@ -234,7 +251,7 @@ function OssPage() {
         refreshTree();
       })
       .catch((e) => {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       });
   };
@@ -331,7 +348,7 @@ function OssPage() {
         refreshTree();
         if (!isDir) openFile(key, finalName);
       } catch (e) {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       }
     };
@@ -368,7 +385,7 @@ function OssPage() {
         bump();
         refreshTree();
       } catch (e) {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       }
     };
@@ -400,7 +417,7 @@ function OssPage() {
         bump();
         refreshTree();
       } catch (e) {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       }
     };
@@ -429,7 +446,7 @@ function OssPage() {
         bump();
       })
       .catch((e) => {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       });
   };
@@ -473,7 +490,7 @@ function OssPage() {
         openFile(target, newName);
         refreshTree();
       } catch (e) {
-        st.current.status = String(e);
+        st.current.status = errMsg(e);
         bump();
       }
     };
@@ -536,7 +553,10 @@ function OssPage() {
     });
     vdRef.current = vd;
     return () => {
-      vd.destroy();
+      // Vditor 构造函数是异步初始化(this.vditor 在 i18n 等脚本加载完才挂上),
+      // 初始化完成前调 destroy 会读 undefined.element 崩溃(StrictMode
+      // 双挂载的清理阶段必现)——未完成的实例随 DOM 摘除丢弃即可
+      if (vdRef.current && vdRef.current.vditor) vdRef.current.destroy();
       vdRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -610,7 +630,7 @@ function OssPage() {
               ))}
           </div>
         </aside>
-        <main className="oss-main">
+        <main className={'oss-main' + (max ? ' maximized' : '')}>
           <div className="oss-filebar">
             {s.currentName}
             {s.dirty && s.current && <span className="oss-dirty">● 未保存</span>}
@@ -690,10 +710,35 @@ function OssPage() {
                 )}
               </>
             )}
+            <button
+              type="button"
+              className="tool"
+              title={max ? '还原编辑区(Esc)' : '最大化编辑区'}
+              onClick={() => setMax(!max)}
+            >
+              {max ? <ShrinkIcon /> : <ExpandIcon />}
+            </button>
           </div>
           <div className="oss-editor" ref={hostRef} style={editorStyle} />
           <SuggestPanel state={suggest.state} onPick={suggest.accept} onHover={suggest.setActive} />
           <CommentDrawer ctl={cmt} />
+          {max && (
+            <div className="oss-floatbar">
+              <button
+                type="button"
+                className="tool oss-save"
+                disabled={!(s.dirty && s.current)}
+                onClick={saveCurrent}
+                title="保存回对象存储"
+              >
+                💾 保存
+              </button>
+              <span className="oss-status">{s.status}</span>
+              <button type="button" className="tool" title="还原编辑区(Esc)" onClick={() => setMax(false)}>
+                <ShrinkIcon />
+              </button>
+            </div>
+          )}
           {s.previewUrl && (
             <div className="oss-lightbox" title="点击关闭" onClick={closePreview}>
               <img src={s.previewUrl} alt="preview" />
