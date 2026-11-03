@@ -15,13 +15,22 @@ on:
     paths:
       - "Dockerfile.server"
       - "rust/**"
-      - "react/Dockerfile"
+      - "react/**"
       - ".github/workflows/docker-ghcr.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+
+env:
+  # Sealos 对象存储(S3),与 docker.yml 同一套 Secrets/Variables。
+  # 不设也能构建,/oss 页只显示“未配置”。注意:它们会被编译进公开的前端包。
+  VITE_OSS_ENDPOINT: objectstorageapi.bja.sealos.run
+  VITE_OSS_BUCKET: mpzfivcp-watchwonderful
+  VITE_OSS_REGION: us-east-1
+  VITE_OSS_AK: ${{ secrets.OSS_AK }}
+  VITE_OSS_SK: ${{ secrets.OSS_SK }}
 
 jobs:
   react:
@@ -53,6 +62,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_OSS_ENDPOINT=${{ env.VITE_OSS_ENDPOINT }}
+            VITE_OSS_BUCKET=${{ env.VITE_OSS_BUCKET }}
+            VITE_OSS_REGION=${{ env.VITE_OSS_REGION }}
+            VITE_OSS_AK=${{ env.VITE_OSS_AK }}
+            VITE_OSS_SK=${{ env.VITE_OSS_SK }}
           cache-from: type=gha,scope=react
           cache-to: type=gha,mode=max,scope=react
 

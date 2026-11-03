@@ -56,6 +56,50 @@ export interface DictWord {
   trans: Record<string, string>;
 }
 
+// ---- 批注(便签 note/<id> 与文档库 oss/<key> 共用;doc 前缀决定端点) ----
+
+export interface CommentItem {
+  id: string;
+  doc: string;
+  quote: string;
+  text: string;
+  author: string;
+  created_at: string;
+  start: number;
+  end: number;
+}
+
+export interface CommentList {
+  comments: CommentItem[];
+}
+
+export interface CommentUpsert {
+  id: string;
+  doc: string;
+  quote: string;
+  text: string;
+  start: number;
+  end: number;
+}
+
+export interface PosDocResponse {
+  markdown?: string;
+}
+
+// 与 Rust 版同契约:note 文档走 /api/note/<id>/comments,其余走全局 /api/comments
+function commentUrls(doc: string): { list: string; post: string; del: (id: string) => string } {
+  if (doc.startsWith('note/')) {
+    const enc = encodeURIComponent(doc.slice(5));
+    return {
+      list: `/api/note/${enc}/comments`,
+      post: `/api/note/${enc}/comments`,
+      del: (id) => `/api/note/${enc}/comments/${id}`,
+    };
+  }
+  const enc = encodeURIComponent(doc);
+  return { list: `/api/comments?doc=${enc}`, post: `/api/comments`, del: (id) => `/api/comments/${id}` };
+}
+
 export const api = {
   whoami: () => req<{ user: { username: string } }>('/api/whoami'),
   login: (username: string, password: string) =>
@@ -71,6 +115,19 @@ export const api = {
   dictLangs: () => req<{ langs: DictLang[] }>('/api/dict/langs'),
   dictLookup: (q: string, lang: string) =>
     req<{ words: DictWord[] }>(`/api/dict/lookup?q=${encodeURIComponent(q)}&lang=${encodeURIComponent(lang)}`),
+
+  comments: (doc: string) => req<CommentList>(commentUrls(doc).list),
+  upsertComment: (body: CommentUpsert) =>
+    req<{ ok: boolean }>(commentUrls(body.doc).post, { method: 'POST', body: JSON.stringify(body) }),
+  deleteComment: (doc: string, id: string) =>
+    req<{ ok: boolean }>(commentUrls(doc).del(id), { method: 'DELETE' }),
+
+  // PDF → markdown(multipart 字段 file;不走 req,因为不能设 JSON Content-Type)
+  pdf2md: async (form: FormData): Promise<PosDocResponse> => {
+    const r = await fetch(API_BASE + '/api/pdf2md', { method: 'POST', body: form, credentials: 'include' });
+    if (!r.ok) throw new ApiError(r.status, await r.text().catch(() => ''));
+    return r.json() as Promise<PosDocResponse>;
+  },
 };
 
 export function newNoteId(): string {

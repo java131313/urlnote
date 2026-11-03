@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/editor.tsx","./src/login.tsx","./src/picker.tsx","./src/api.ts","./src/main.tsx","./src/suggest.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/editor.tsx","./src/login.tsx","./src/picker.tsx","./src/api.ts","./src/main.tsx","./src/suggest.tsx","./src/oss/osspage.tsx","./src/oss/comments.tsx","./src/oss/config.ts","./src/oss/editortools.ts","./src/oss/s3.ts","./src/oss/sigv4.test.ts","./src/oss/sigv4.ts","./src/oss/testutil.ts","./src/oss/tree.test.ts","./src/oss/tree.ts"],"version":"5.9.3"}
