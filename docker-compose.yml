@@ -48,8 +48,8 @@ services:
     ports:
       - "${REACT_PORT:-3000}:80"
     environment:
-      # 连线上 API:改为 https://yyuqmndqpnjr.sealosbja.site
-      API_TARGET: ${API_TARGET:-http://localhost:8080}
+      # 默认连线上 API;本地 server 用 API_TARGET=http://localhost:8080 覆盖
+      API_TARGET: ${API_TARGET:-https://yyuqmndqpnjr.sealosbja.site}
     networks:
       - internal
 

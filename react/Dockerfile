@@ -16,5 +16,5 @@ FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 # 模板在容器启动时经 envsubst 生成 default.conf(${API_TARGET})
 COPY nginx.default.conf.template /etc/nginx/templates/default.conf.template
-ENV API_TARGET=http://localhost:8080
+ENV API_TARGET=https://yyuqmndqpnjr.sealosbja.site
 EXPOSE 80
