@@ -650,6 +650,8 @@ struct OssCtx {
     color: RwSignal<String>,
     /// 图片预览的 object URL(点亮浮层时 Some)
     preview_url: RwSignal<Option<String>>,
+    /// 编辑区最大化(ESC 还原)
+    max: RwSignal<bool>,
     /// 批注(锚定文字)
     comments: CommentCtl,
     suggest: Suggest,
@@ -1284,6 +1286,7 @@ pub fn OssView() -> impl IntoView {
         font_size: RwSignal::new(DEFAULT_FONT_SIZE),
         color: RwSignal::new(String::new()),
         preview_url: RwSignal::new(None),
+        max: RwSignal::new(false),
         comments: CommentCtl::new(),
         suggest: Suggest::new(),
     };
@@ -1353,6 +1356,23 @@ pub fn OssView() -> impl IntoView {
                 k.prevent_default();
                 k.stop_propagation();
                 sug.on_keydown(k, &insert);
+            },
+        ));
+        // 最大化时 ESC 还原(suggest 面板打开时上面的捕获处理器先消费)
+        let max = ctx.max;
+        l.borrow_mut().push(EventListener::new(
+            &document(),
+            "keydown",
+            move |e| {
+                if !max.get() {
+                    return;
+                }
+                let Some(k) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+                    return;
+                };
+                if k.key() == "Escape" {
+                    max.set(false);
+                }
             },
         ));
     });
@@ -1453,7 +1473,10 @@ pub fn OssView() -> impl IntoView {
                         />
                     </div>
                 </aside>
-                <main class="oss-main">
+                <main
+                class="oss-main"
+                class:maximized=move || ctx.max.get()
+            >
                     <div class="oss-filebar">
                         {move || ctx.current_name.get()}
                         {move || {
@@ -1510,6 +1533,13 @@ pub fn OssView() -> impl IntoView {
                                 </button>
                             </Show>
                         </Show>
+                        <button
+                            type="button"
+                            class="tool"
+                            title=move || if ctx.max.get() { "还原编辑区 (Esc)".to_string() } else { "最大化编辑区".to_string() }
+                            inner_html=move || if ctx.max.get() { crate::SHRINK_ICON } else { crate::EXPAND_ICON }.to_string()
+                            on:click=move |_| ctx.max.set(!ctx.max.get())
+                        ></button>
                     </div>
                     <div
                         class="oss-editor"
@@ -1528,6 +1558,27 @@ pub fn OssView() -> impl IntoView {
                     ></div>
                     <SuggestPanel sug=ctx.suggest insert=insert/>
                     <CommentPanel ctl=ctx.comments content_root=".oss-editor .vditor-content"/>
+                    <Show when=move || ctx.max.get()>
+                        <div class="oss-floatbar">
+                            <button
+                                type="button"
+                                class="tool oss-save"
+                                prop:disabled=move || !(ctx.dirty.get() && ctx.current.get().is_some())
+                                on:click=move |_| save_current()
+                                title="保存回对象存储"
+                            >
+                                "💾 保存"
+                            </button>
+                            <span class="oss-status">{move || ctx.status.get()}</span>
+                            <button
+                                type="button"
+                                class="tool"
+                                title="还原编辑区 (Esc)"
+                                inner_html=crate::SHRINK_ICON
+                                on:click=move |_| ctx.max.set(false)
+                            ></button>
+                        </div>
+                    </Show>
                     <Show when=move || ctx.preview_url.get().is_some()>
                         <div
                             class="oss-lightbox"

@@ -197,7 +197,13 @@ struct Ctx {
     // edit-lock notice: dismissible banner + apply panel
     lock_dismissed: RwSignal<bool>,
     lock_apply_open: RwSignal<bool>,
+    /// 编辑区最大化(便签页;ESC 还原)
+    max: RwSignal<bool>,
 }
+
+/// 编辑区最大化/还原图标(与 react/src/icons.tsx 同形)
+pub(crate) const EXPAND_ICON: &str = "<svg viewBox='0 0 24 24' width='13' height='13' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 3H5a2 2 0 0 0-2 2v3'/><path d='M16 3h3a2 2 0 0 1 2 2v3'/><path d='M8 21H5a2 2 0 0 1-2-2v-3'/><path d='M16 21h3a2 2 0 0 0 2-2v-3'/></svg>";
+pub(crate) const SHRINK_ICON: &str = "<svg viewBox='0 0 24 24' width='13' height='13' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M8 3v3a2 2 0 0 1-2 2H3'/><path d='M16 3v3a2 2 0 0 0 2 2h3'/><path d='M8 21v-3a2 2 0 0 0-2-2H3'/><path d='M16 21v-3a2 2 0 0 1 2-2h3'/></svg>";
 
 impl Ctx {
     fn id(&self) -> String {
@@ -2264,6 +2270,7 @@ fn App() -> impl IntoView {
     let mark_mode = RwSignal::new(false);
     let lock_dismissed = RwSignal::new(false);
     let lock_apply_open = RwSignal::new(false);
+    let max = RwSignal::new(false);
 
     let ctx = Ctx {
         state: StoredValue::new(SendWrapper::new(AppState {
@@ -2327,6 +2334,7 @@ fn App() -> impl IntoView {
         mark_mode,
         lock_dismissed,
         lock_apply_open,
+        max,
     };
 
     // editor zoom changed → text re-layouts; re-render overlay marks so they
@@ -2408,6 +2416,29 @@ fn App() -> impl IntoView {
                             ctx.font_size.set(DEFAULT_FONT_SIZE);
                         }
                         _ => {}
+                    }
+                },
+            ));
+        });
+    }
+
+    // 编辑区最大化:ESC 还原(词典提示面板打开时 ESC 先关面板——
+    // suggest 的捕获阶段处理器会 stopPropagation)
+    {
+        let max = ctx.max;
+        ctx.state.update_value(|st| {
+            st.listeners.push(EventListener::new(
+                &document(),
+                "keydown",
+                move |e| {
+                    if !max.get() {
+                        return;
+                    }
+                    let Some(k) = e.dyn_ref::<web_sys::KeyboardEvent>() else {
+                        return;
+                    };
+                    if k.key() == "Escape" {
+                        max.set(false);
                     }
                 },
             ));
@@ -2787,6 +2818,10 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
     };
 
     view! {
+        <div
+            class="editor-area"
+            class:maximized=move || ctx.max.get()
+        >
         <header>
             <strong>"urlnote"</strong>
             <a href=format!("{BASE_PATH}/{id}") title="当前便签地址">
@@ -3168,6 +3203,13 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                         "默认"
                     </button>
                 </Show>
+                <button
+                    type="button"
+                    class="tool"
+                    title=move || if ctx.max.get() { "还原编辑区 (Esc)".to_string() } else { "最大化编辑区".to_string() }
+                    inner_html=move || if ctx.max.get() { SHRINK_ICON } else { EXPAND_ICON }.to_string()
+                    on:click=move |_| ctx.max.set(!ctx.max.get())
+                ></button>
             </span>
             <span class="user-wrap" title="当前用户">
                 "👤 "
@@ -3449,6 +3491,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                     </div>
                 </div>
             </Show>
+        </div>
         </div>
     }
 }

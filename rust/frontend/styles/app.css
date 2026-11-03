@@ -896,6 +896,14 @@ header a:hover {
     background: #1b1b1b;
     color: #ddd;
   }
+  .editor-area.maximized,
+  .oss-main.maximized {
+    background: #1b1b1b;
+  }
+  .oss-floatbar {
+    background: #23272e;
+    border-color: #333;
+  }
   header {
     border-color: #333;
     color: #999;
@@ -1275,6 +1283,50 @@ header a:hover {
 .oss-editor {
   flex: 1;
   min-height: 0;
+}
+
+/* ---- 编辑区最大化(便签 .editor-area / 文档库 .oss-main) ----
+   固定定位盖过其余界面;便签页 header+编辑器一起罩住,控制不丢 */
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.editor-area.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #fafafa;
+}
+.oss-main.maximized {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #fafafa;
+}
+
+/* 文档库最大化时的浮动操作条(💾 保存/状态/还原,顶替被盖住的 oss-top) */
+.oss-floatbar {
+  position: absolute;
+  bottom: 12px;
+  right: 14px;
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #e2e2e2;
+  border-radius: 10px;
+  padding: 6px 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.14);
+}
+.oss-floatbar .oss-status {
+  min-width: 60px;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- 批注侧栏 ---- */

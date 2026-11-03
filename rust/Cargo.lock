@@ -3658,6 +3658,7 @@ dependencies = [
  "jieba-rs",
  "js-sys",
  "lru",
+ "pdf-extract",
  "ruzstd",
  "serde",
  "serde_json",
