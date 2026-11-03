@@ -15,16 +15,16 @@ server {
     proxy_ssl_server_name on;
 
     location /api/ {
+        # 不改写 Host:nginx 默认带上游域名,Sealos 网关按 Host 路由,
+        # 传 $host(localhost:3000)会 404
         proxy_pass ${API_TARGET};
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
         proxy_read_timeout 60s;
         client_max_body_size 9m;
     }
     location /i/ {
         proxy_pass ${API_TARGET};
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Proto https;
     }
 
     # 内容哈希资源长缓存;index.html 不缓存,保证拿到新哈希
