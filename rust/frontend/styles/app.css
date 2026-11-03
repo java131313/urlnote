@@ -414,6 +414,16 @@ header a:hover {
   justify-content: center;
   background: #fafafa;
 }
+
+/* whoami 探测中的占位(文档库入口门用) */
+.boot {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  font-size: 14px;
+}
 .login-card {
   display: flex;
   flex-direction: column;

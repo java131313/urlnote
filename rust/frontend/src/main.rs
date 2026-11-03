@@ -2182,7 +2182,7 @@ fn read_files_into_editor(ctx: Ctx, append: bool, input: HtmlInputElement) {
 
 // current user lives in a thread-local so LoginView can set it too
 thread_local! {
-    static USER: RwSignal<Option<String>> = RwSignal::new(None);
+    pub(crate) static USER: RwSignal<Option<String>> = RwSignal::new(None);
 }
 
 // ---- app ----
@@ -2216,9 +2216,10 @@ fn note_suggest_insert(ctx: Ctx) -> Callback<String> {
 fn App() -> impl IntoView {
     // reserved first path segment: the object-storage file library page
     // (both sides link to each other; note ids never contain non-alphanumerics
-    // so "oss" can never collide with a real note id)
+    // so "oss" can never collide with a real note id). 文档库也要登录:
+    // OssGate 先 whoami,未登录给登录表单(同便签页一道门)
     if first_path_segment() == "oss" {
-        return view! { <oss::OssView/> }.into_any();
+        return view! { <oss::OssGate/> }.into_any();
     }
 
     // /:id is the note id; "/" redirects to a fresh one
@@ -2588,7 +2589,16 @@ fn App() -> impl IntoView {
         <div id="app">
             {move || {
                 if show_login.get() {
-                    view! { <LoginView ctx show_login/> }.into_any()
+                    view! {
+                        <LoginView
+                            show_login
+                            on_ok=Callback::new(move |_| {
+                                ctx.refresh_edit_status();
+                                ctx.load_note();
+                            })
+                        />
+                    }
+                        .into_any()
                 } else {
                     view! { <MainView ctx editor_style/> }.into_any()
                 }
@@ -2645,7 +2655,9 @@ fn init_note_id() -> String {
 }
 
 #[component]
-fn LoginView(ctx: Ctx, show_login: RwSignal<bool>) -> impl IntoView {
+/// 登录表单(便签页与文档库共用)。成功后置 USER、收起自己,再跑调用方
+/// 的 on_ok(便签页:刷新锁状态+装载便签;文档库:重跑 whoami 门)。
+pub(crate) fn LoginView(show_login: RwSignal<bool>, on_ok: Callback<()>) -> impl IntoView {
     let user_ref = NodeRef::<Input>::new();
     let pass_ref = NodeRef::<Input>::new();
     let login_error = RwSignal::new(String::new());
@@ -2655,7 +2667,6 @@ fn LoginView(ctx: Ctx, show_login: RwSignal<bool>) -> impl IntoView {
         let u = user_ref.get().map(|e| e.value()).unwrap_or_default();
         let p = pass_ref.get().map(|e| e.value()).unwrap_or_default();
         login_error.set(String::new());
-        let ctx = ctx;
         spawn_local(async move {
             let req = gloo_net::http::Request::post(&api_url("/api/login"))
                 .credentials(RequestCredentials::Include)
@@ -2673,8 +2684,7 @@ fn LoginView(ctx: Ctx, show_login: RwSignal<bool>) -> impl IntoView {
                             .unwrap_or_default();
                         USER.with(|s| s.set(Some(name)));
                         show_login.set(false);
-                        ctx.refresh_edit_status();
-                        ctx.load_note();
+                        on_ok.run(());
                     }
                     Ok(resp) => {
                         let msg = resp

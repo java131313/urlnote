@@ -1261,6 +1261,61 @@ fn TreeDir(prefix: String) -> AnyView {
     .into_any()
 }
 
+/// /oss 入口:未配置 → 提示页;未登录 → 登录表单(与便签页同一套
+/// LoginView);登录后才挂 OssView。S3 凭证虽编译进包,UI 层先挡一道
+/// (后端 /api/pdf2md、/api/comments 本来就要求登录)。
+#[component]
+pub fn OssGate() -> impl IntoView {
+    if !OSS_ENABLED {
+        return view! {
+            <div class="oss-page">
+                <div class="oss-top">
+                    <a class="oss-home" href=format!("{BASE_PATH}/")>"📝 便签"</a>
+                    <span class="oss-brand">"🗂 文件库"</span>
+                </div>
+                <div class="oss-empty">"对象存储未配置：需要 OSS_AK / OSS_BUCKET 构建参数"</div>
+            </div>
+        }
+        .into_any();
+    }
+
+    let checked = RwSignal::new(false);
+    let show_login = RwSignal::new(false);
+    spawn_local(async move {
+        match Request::get(&api_url("/api/whoami"))
+            .credentials(RequestCredentials::Include)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.ok() => {
+                if let Ok(d) = resp.json::<shared::WhoamiResponse>().await {
+                    crate::USER.with(|u| u.set(Some(d.user.username)));
+                }
+            }
+            _ => show_login.set(true),
+        }
+        checked.set(true);
+    });
+
+    let on_ok = Callback::new(move |_| {
+        // cookie 已写入,重跑本页的 whoami 门即可进入
+        let _ = window().location().reload();
+    });
+
+    view! {
+        {move || {
+            if !checked.get() {
+                view! { <div class="boot">"加载中…"</div> }.into_any()
+            } else if show_login.get() {
+                view! { <crate::LoginView show_login on_ok/> }.into_any()
+            } else {
+                view! { <OssView/> }.into_any()
+            }
+        }}
+    }
+    .into_any()
+}
+
 #[component]
 pub fn OssView() -> impl IntoView {
     if !OSS_ENABLED {

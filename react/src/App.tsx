@@ -42,11 +42,11 @@ export default function App() {
     setNoteId(id);
   }, []);
 
-  // oss 页有自己的顶栏与编辑器;S3 凭证编译进包,不做登录要求(同 Rust)
-  if (oss) return <OssRoute />;
-
+  // 文档库也要登录:whoami 失败先给登录表单,登录后再进 /oss
+  // (后端 /api/pdf2md、/api/comments 本就要登录;S3 直连这层是 UI 门禁)
   if (user === undefined) return <div className="boot">加载中…</div>;
   if (user === null) return <Login onOk={() => setUser('')} />;
+  if (oss) return <OssRoute />;
 
   return (
     <div className="app">
