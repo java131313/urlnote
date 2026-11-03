@@ -15,7 +15,8 @@ const isWordChar = (c: string) => /[\p{L}\p{N}_]/u.test(c);
 
 function fragmentAtCursor(): { node: Text; start: number; end: number; text: string } | null {
   const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || !sel.anchorNode || sel.anchorNode.nodeType !== Node.TEXT_NODE) {
+  // 与 Rust 版一致:只认光标(折叠选区);拖选展开时不提示
+  if (!sel || !sel.isCollapsed || !sel.anchorNode || sel.anchorNode.nodeType !== Node.TEXT_NODE) {
     return null;
   }
   const node = sel.anchorNode as Text;
