@@ -11,6 +11,9 @@ server {
 
     # 后端 API 与图片:运行时用 API_TARGET 替换(nginx 官方镜像的
     # /etc/nginx/templates 机制会在启动前做 envsubst)
+    # Sealos 网关(Envoy)按 SNI 路由:必须显式开启 SNI,否则握手被拒 → 502
+    proxy_ssl_server_name on;
+
     location /api/ {
         proxy_pass ${API_TARGET};
         proxy_set_header Host $host;
