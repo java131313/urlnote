@@ -20,6 +20,45 @@ const OSS_FONT_STEP = 2;
 /// 编辑器设置的 sidecar 文件:<key>.settings.json
 const settingsKey = (key: string) => `${key}.settings.json`;
 
+/// HTML5 拖放的负载类型:拖动文件树中的文件/文件夹(S3 无 rename,移动 =
+/// 目标键 copy + 源键 delete,与重命名同一套 helper)
+const OSS_DND_MIME = 'application/x-urlnote-oss';
+
+function readDrag(e: React.DragEvent): { key: string; name: string; isDir: boolean } | null {
+  try {
+    const v = JSON.parse(e.dataTransfer.getData(OSS_DND_MIME));
+    return typeof v?.key === 'string' && typeof v?.name === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/// 文件夹行/根目录行的投放目标处理器:dragover 高亮,drop 触发 onMove
+function dropTargetProps(
+  onMove: (key: string, name: string, isDir: boolean, targetPrefix: string) => void,
+  targetPrefix: string,
+) {
+  return {
+    onDragOver: (e: React.DragEvent) => {
+      if (e.dataTransfer.types.indexOf(OSS_DND_MIME) === -1) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = 'move';
+      e.currentTarget.classList.add('oss-drag-over');
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.currentTarget.classList.remove('oss-drag-over');
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.currentTarget.classList.remove('oss-drag-over');
+      const p = readDrag(e);
+      if (p) onMove(p.key, p.name, !!p.isDir, targetPrefix);
+    },
+  };
+}
+
 /// Go/Rust 后端同规则:<=0 用默认,取整后夹在 [10,40]
 function resolveFontSize(n: number): number {
   if (!(n > 0)) return DEFAULT_FONT_SIZE;
@@ -426,6 +465,47 @@ function OssPage() {
 
   // ---- 打开分发 ----
 
+  /// 拖动移动:文件走 renameFileKey,文件夹走 copyPrefix;targetPrefix 为 '' = 根目录
+  const moveEntry = (key: string, name: string, isDir: boolean, targetPrefix: string) => {
+    const trimmed = key.replace(/\/+$/, '');
+    const i = trimmed.lastIndexOf('/');
+    const parent = i < 0 ? '' : trimmed.slice(0, i + 1);
+    if (parent === targetPrefix) return; // 已在目标目录
+    if (isDir && (targetPrefix === key || targetPrefix.startsWith(key))) return; // 不能拖进自己或自己的子树
+    const newKey = isDir ? `${targetPrefix}${name}/` : `${targetPrefix}${name}`;
+    const where = targetPrefix || '根目录';
+    const confirmMsg = isDir
+      ? `把文件夹 ${name} 移动到 ${where}?(其中所有文件一起移动)`
+      : `把 ${name} 移动到 ${where}?`;
+    if (!window.confirm(confirmMsg)) return;
+    st.current.status = `移动 ${name}…`;
+    bump();
+    const run = async () => {
+      try {
+        // 目标已有同名对象时二次确认,避免拖动误覆盖
+        const conflicts = await listAllEntriesUnder(newKey);
+        if (
+          conflicts.length > 0 &&
+          !window.confirm(`目标已存在 ${conflicts.length} 个对象,同名将被覆盖,继续?`)
+        ) {
+          st.current.status = '已取消';
+          bump();
+          return;
+        }
+        if (isDir) await copyPrefix(key, newKey);
+        else await renameFileKey(key, newKey);
+        fixCurrentAfterMove(key, newKey);
+        st.current.status = `已移动 ${name}`;
+        bump();
+        refreshTree();
+      } catch (e) {
+        st.current.status = errMsg(e);
+        bump();
+      }
+    };
+    void run();
+  };
+
   /// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开
   const openEntry = (key: string, name: string) => {
     const kind = fileKind(name);
@@ -601,6 +681,14 @@ function OssPage() {
             </button>
           </div>
           <div className="oss-tree">
+            <div
+              className="oss-trow oss-root-drop"
+              title="把文件/文件夹拖到此处移动到根目录"
+              {...dropTargetProps(moveEntry, '')}
+            >
+              <span className="oss-ticon">📁</span>
+              <span className="oss-tname">根目录</span>
+            </div>
             {s.tree.dirs.length === 0 && s.tree.files.length === 0 && (
               <div className="oss-hint">（空桶，点上方按钮新建）</div>
             )}
@@ -614,6 +702,7 @@ function OssPage() {
                 onCreate={createIn}
                 onRename={renameEntry}
                 onDelete={deleteEntry}
+                onMove={moveEntry}
               />
             ))}
             {s.tree.files
@@ -758,11 +847,28 @@ function TreeDir(props: {
   onCreate: (dirPrefix: string, isDir: boolean) => void;
   onRename: (path: string, isDir: boolean) => void;
   onDelete: (path: string, isDir: boolean) => void;
+  onMove: (key: string, name: string, isDir: boolean, targetPrefix: string) => void;
 }) {
   const { node } = props;
   return (
     <div className="oss-tdir">
-      <div className="oss-trow" onClick={() => props.onToggle(node.prefix)}>
+      <div
+        className="oss-trow"
+        onClick={() => props.onToggle(node.prefix)}
+        draggable
+        onDragStart={(e) => {
+          if ((e.target as HTMLElement).closest('button')) {
+            e.preventDefault(); // 从操作按钮上拖起不算
+            return;
+          }
+          e.dataTransfer.setData(
+            OSS_DND_MIME,
+            JSON.stringify({ key: node.prefix, name: node.name, isDir: true }),
+          );
+          e.dataTransfer.effectAllowed = 'move';
+        }}
+        {...dropTargetProps(props.onMove, node.prefix)}
+      >
         <span className={'oss-chev' + (node.open ? ' oss-chev-open' : '')}>▸</span>
         <span className="oss-ticon">{node.open ? '📂' : '📁'}</span>
         <span className="oss-tname">{node.name}</span>
@@ -841,7 +947,21 @@ function FileRow(props: {
 }) {
   const f = props.entry;
   return (
-    <div className={'oss-trow oss-tfile' + (props.current === f.key ? ' oss-active' : '')}>
+    <div
+      className={'oss-trow oss-tfile' + (props.current === f.key ? ' oss-active' : '')}
+      draggable
+      onDragStart={(e) => {
+        if ((e.target as HTMLElement).closest('button')) {
+          e.preventDefault(); // 从操作按钮上拖起不算
+          return;
+        }
+        e.dataTransfer.setData(
+          OSS_DND_MIME,
+          JSON.stringify({ key: f.key, name: f.name, isDir: false }),
+        );
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+    >
       <button type="button" className="oss-open" onClick={() => props.onOpen(f.key, f.name)}>
         <span className="oss-ticon">{fileIcon(f.name)}</span>
         <span className="oss-tname">{f.name}</span>

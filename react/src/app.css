@@ -206,6 +206,11 @@ a.tool { text-decoration: none; display: inline-block; }
 .oss-active, .oss-active:hover { background: #d6e4ff; }
 .oss-active .oss-tname { color: #174ea6; }
 
+/* 拖放移动:文件夹行与根目录行是投放目标,dragover 时高亮 */
+.oss-drag-over, .oss-drag-over:hover { background: #d6e4ff; outline: 2px dashed #174ea6; outline-offset: -2px; }
+.oss-drag-over .oss-tname { color: #174ea6; }
+.oss-root-drop { color: var(--muted); }
+
 /* 主区 */
 .oss-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .oss-filebar {
@@ -296,6 +301,8 @@ a.tool { text-decoration: none; display: inline-block; }
   .oss-chev { color: #8a919b; }
   .oss-active, .oss-active:hover { background: #233a5e; }
   .oss-active .oss-tname { color: #9ec2ff; }
+  .oss-drag-over, .oss-drag-over:hover { background: #233a5e; outline-color: #9ec2ff; }
+  .oss-drag-over .oss-tname { color: #9ec2ff; }
   .oss-filebar { color: #ccc; }
   .comment-quote { background: #232c36; }
   .comment-quote:hover { background: #2a3646; }
