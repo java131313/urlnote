@@ -42,6 +42,17 @@ services:
     networks:
       - internal
 
+  react:
+    build: ./react
+    restart: unless-stopped
+    ports:
+      - "${REACT_PORT:-3000}:80"
+    environment:
+      # 连线上 API:改为 https://yyuqmndqpnjr.sealosbja.site
+      API_TARGET: ${API_TARGET:-http://localhost:8080}
+    networks:
+      - internal
+
   web:
     build:
       context: .
