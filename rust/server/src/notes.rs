@@ -58,9 +58,25 @@ pub async fn get_note(
     let note = match doc {
         None => Note::empty(&id),
         Some(d) => {
+            // 正文读不出来必须报错,不能静默当空便签返回:客户端会把空内容
+            // 显示出来,回声自动保存随即用空内容覆写,把可恢复的现场彻底破坏
+            // (eQlv3 的 GridFS 文件丢失后就是这样被掩盖的)
             let content = match doc_objid(&d, "content_id") {
-                Some(oid) => String::from_utf8_lossy(&st.gridfs_get(BUCKET_CONTENTS, oid).await.unwrap_or_default()).into_owned(),
-                None => String::new(),
+                Some(oid) => {
+                    let bytes = st.gridfs_get(BUCKET_CONTENTS, oid).await.map_err(|e| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            &format!("note content unreadable: {e}"),
+                        )
+                    })?;
+                    String::from_utf8_lossy(&bytes).into_owned()
+                }
+                None => {
+                    return Err(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "note content missing (content_id)",
+                    ));
+                }
             };
             note_from_doc(&id, &d, content)
         }

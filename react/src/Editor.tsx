@@ -19,6 +19,10 @@ export function Editor(props: {
   const hostRef = useRef<HTMLDivElement>(null);
   const vditorRef = useRef<Vditor | null>(null);
   const loadedFor = useRef<string>('');
+  // Vditor setValue 后会异步触发一次回声 input(与 OssPage 同问题):
+  // 不压住的话,打开便签 800ms 后就被"自动保存"一遍——updated_at 白涨、
+  // 标记副本被重生;若正文恰好读不出来,这一下会把最后的标记副本也清掉
+  const suppressUntil = useRef(0);
   const dirty = useRef(false);
   const saveTimer = useRef<number>();
   const [note, setNote] = useState<Note | null>(null);
@@ -108,6 +112,7 @@ export function Editor(props: {
         max: 8 * 1024 * 1024,
       },
       input: () => {
+        if (Date.now() < suppressUntil.current) return; // setValue 的回声,不是用户编辑
         dirty.current = true;
         props.onDirty(true);
         setStatus('有未保存的更改');
@@ -122,6 +127,7 @@ export function Editor(props: {
               setNote(n);
               setFontSize(n.font_size || DEFAULT_FONT);
               setColor(n.color || '');
+              suppressUntil.current = Date.now() + 500;
               vd.setValue(n.content || '');
               dirty.current = false;
               props.onDirty(false);
@@ -155,6 +161,7 @@ export function Editor(props: {
         setNote(n);
         setFontSize(n.font_size || DEFAULT_FONT);
         setColor(n.color || '');
+        suppressUntil.current = Date.now() + 500;
         vd.setValue(n.content || '');
         dirty.current = false;
         props.onDirty(false);
