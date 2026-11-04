@@ -694,10 +694,12 @@ fn reset_settings(ctx: &OssCtx) {
 }
 
 fn bump_font(ctx: &OssCtx, delta: i64) {
-    let next = ctx.font_size.get() + delta;
-    ctx.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
-    // 字号/颜色不触发编辑器 input,要自己标脏,否则保存按钮不亮、设置丢失
-    ctx.dirty.set(true);
+    crate::keep_caret(|| {
+        let next = ctx.font_size.get() + delta;
+        ctx.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        // 字号/颜色不触发编辑器 input,要自己标脏,否则保存按钮不亮、设置丢失
+        ctx.dirty.set(true);
+    });
 }
 
 fn evt_value(e: &web_sys::Event) -> String {

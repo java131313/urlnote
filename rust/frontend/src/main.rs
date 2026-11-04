@@ -34,6 +34,60 @@ fn document() -> web_sys::Document {
     window().document().expect("document")
 }
 
+/// 改 zoom(字号)前后保持光标视口位置。zoom 作用在滚动容器上,布局重排
+/// 会让光标视觉跳动 relY·Δz(relY 为光标距视口顶的未缩放距离);scrollTop
+/// 是不经 zoom 的 CSS px,视口差值除以当前 zoom 补回即可。浏览器实测:
+/// 连续 4 步放大(1.125→1.5)光标视口位置误差 0。选区不是编辑器内的
+/// 折叠光标时静默跳过。
+pub(crate) fn keep_caret(apply: impl FnOnce()) {
+    let anchor = window()
+        .get_selection()
+        .ok()
+        .flatten()
+        .filter(|s| s.is_collapsed() && s.range_count() > 0)
+        .and_then(|s| s.get_range_at(0).ok())
+        .map(|r| {
+            let top = r.get_bounding_client_rect().top();
+            (r, top)
+        });
+    apply();
+    let Some((range, top)) = anchor else { return };
+    // 等 Leptos effect 把 zoom 写进 DOM、浏览器完成布局后再量
+    Timeout::new(0, move || {
+        let dy = range.get_bounding_client_rect().top() - top;
+        if dy.abs() < 1.0 {
+            return;
+        }
+        let mut el = range.start_container().ok().and_then(|n| n.parent_element());
+        while let Some(cur) = el {
+            if cur.tag_name() == "HTML" {
+                break;
+            }
+            // 自验证:overflow:visible 的元素 scrollHeight 也会虚高,
+            // 但 scrollTop 设不进去——真滚动了才算找到滚动容器
+            if cur.scroll_height() > cur.client_height() + 2 {
+                // scrollTop 不经 zoom,视口差值要除以当前 zoom 再补回
+                // (computed zoom 需要 Css feature,用 rect/offsetHeight 几何测量)
+                let zoom = {
+                    let rect_h = cur.get_bounding_client_rect().height();
+                    let off_h = cur
+                        .dyn_ref::<HtmlElement>()
+                        .map(|h| h.offset_height() as f64)
+                        .unwrap_or(rect_h);
+                    if rect_h > 0.0 && off_h > 0.0 { rect_h / off_h } else { 1.0 }
+                };
+                let target = cur.scroll_top() + (dy / zoom).round() as i32;
+                cur.set_scroll_top(target);
+                if (cur.scroll_top() - target).abs() <= 1 {
+                    return;
+                }
+            }
+            el = cur.parent_element();
+        }
+        window().scroll_by_with_x_and_y(0.0, dy);
+    });
+}
+
 fn evt_input_value(e: &web_sys::Event) -> String {
     e.target()
         .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
@@ -876,10 +930,12 @@ impl Ctx {
     }
 
     fn bump_font(&self, delta: i64) {
-        let next = self.font_size.get() + delta;
-        self.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
-        // 字号不触发编辑器 input,要自己标脏,否则下次保存不会带上它
-        self.mark_dirty();
+        crate::keep_caret(|| {
+            let next = self.font_size.get() + delta;
+            self.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+            // 字号不触发编辑器 input,要自己标脏,否则下次保存不会带上它
+            self.mark_dirty();
+        });
     }
 
     // ---- POS annotation overlay ----

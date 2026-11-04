@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
 import { api } from '../api';
 import { ExpandIcon, ShrinkIcon } from '../icons';
+import { keepCaretPos } from '../keepCaret';
 import { SuggestPanel, useSuggest } from '../suggest';
 import { OSS_ENABLED } from './config';
 import { createCommentTool, createFontColorTool } from './editorTools';
@@ -743,11 +744,13 @@ function OssPage() {
                   type="button"
                   className="tool"
                   title="缩小显示"
-                  onClick={() => {
-                    st.current.fontSize = Math.max(MIN_FONT_SIZE, s.fontSize - OSS_FONT_STEP);
-                    st.current.dirty = true;
-                    bump();
-                  }}
+                  onClick={() =>
+                    keepCaretPos(() => {
+                      st.current.fontSize = Math.max(MIN_FONT_SIZE, s.fontSize - OSS_FONT_STEP);
+                      st.current.dirty = true;
+                      bump();
+                    })
+                  }
                 >
                   A−
                 </button>
@@ -755,11 +758,13 @@ function OssPage() {
                   type="button"
                   className="tool"
                   title="放大显示"
-                  onClick={() => {
-                    st.current.fontSize = Math.min(MAX_FONT_SIZE, s.fontSize + OSS_FONT_STEP);
-                    st.current.dirty = true;
-                    bump();
-                  }}
+                  onClick={() =>
+                    keepCaretPos(() => {
+                      st.current.fontSize = Math.min(MAX_FONT_SIZE, s.fontSize + OSS_FONT_STEP);
+                      st.current.dirty = true;
+                      bump();
+                    })
+                  }
                 >
                   A+
                 </button>
@@ -768,11 +773,13 @@ function OssPage() {
                     type="button"
                     className="tool"
                     title="恢复默认大小"
-                    onClick={() => {
-                      st.current.fontSize = DEFAULT_FONT_SIZE;
-                      st.current.dirty = true;
-                      bump();
-                    }}
+                    onClick={() =>
+                      keepCaretPos(() => {
+                        st.current.fontSize = DEFAULT_FONT_SIZE;
+                        st.current.dirty = true;
+                        bump();
+                      })
+                    }
                   >
                     A
                   </button>
