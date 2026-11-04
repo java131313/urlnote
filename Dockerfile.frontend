@@ -33,7 +33,14 @@ WORKDIR /app/rust/frontend
 ARG BASE_PATH=""
 ARG API_BASE=""
 ARG SUGGEST_LANG=""
-ENV BASE_PATH=$BASE_PATH API_BASE=$API_BASE SUGGEST_LANG=$SUGGEST_LANG
+ARG OSS_ENDPOINT=""
+ARG OSS_AK=""
+ARG OSS_SK=""
+ARG OSS_BUCKET=""
+ARG OSS_REGION=""
+ENV BASE_PATH=$BASE_PATH API_BASE=$API_BASE SUGGEST_LANG=$SUGGEST_LANG \
+    OSS_ENDPOINT=$OSS_ENDPOINT OSS_AK=$OSS_AK OSS_SK=$OSS_SK \
+    OSS_BUCKET=$OSS_BUCKET OSS_REGION=$OSS_REGION
 RUN trunk build --release $(if [ -n "$BASE_PATH" ]; then echo "--public-url $BASE_PATH"; fi)
 # Trunk 0.22 不拷 static/ —— 与 make rust-frontend 对齐,手工补齐运行时资源
 RUN cp -R static/vditor dist/vditor \

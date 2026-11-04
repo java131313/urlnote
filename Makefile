@@ -29,6 +29,7 @@ rust-static:
 	   rust/frontend/static/pdfjs/
 
 rust-frontend:
+	@if [ -z "$$OSS_AK" ]; then echo "提示: 未设置 OSS_AK/OSS_SK/OSS_BUCKET 环境变量,本次构建的前端 /oss /media 页将显示「未配置」(树列表靠编译期凭据)"; fi
 	cd rust/frontend && trunk build --release
 	# Trunk 0.22 no longer auto-copies static/ — stage vditor's runtime
 	# assets into the dist output so /vditor/* URLs resolve.
