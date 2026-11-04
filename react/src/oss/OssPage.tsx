@@ -801,6 +801,15 @@ function OssPage() {
             )}
             <button
               type="button"
+              className="tool oss-save"
+              disabled={!(s.dirty && s.current)}
+              onClick={saveCurrent}
+              title="保存回对象存储"
+            >
+              💾 保存
+            </button>
+            <button
+              type="button"
               className="tool"
               title={max ? '还原编辑区(Esc)' : '最大化编辑区'}
               onClick={() => setMax(!max)}
