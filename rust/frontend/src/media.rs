@@ -94,11 +94,20 @@ async function engine() {
   if (ffmpeg) return ffmpeg;
   loading ??= (async () => {
     setStatus('首次使用:正在加载 ffmpeg 核心(约 31MB)…'); setBar(8);
-    const { FFmpeg } = await import('__BASE__/ffmpeg/ffmpeg/index.js');
+    // 核心体积超过 CF 静态资产单文件上限(25MiB),CF 部署的 /ffmpeg 被
+    // .assetsignore 排除;同源没有时回退到 GitHub Pages 托管的副本(CORS *)
+    let base = '__BASE__/ffmpeg';
+    try {
+      const r = await fetch(base + '/core/ffmpeg-core.js', { method: 'HEAD' });
+      if (!r.ok) base = 'https://java131313.github.io/urlnote/ffmpeg';
+    } catch {
+      base = 'https://java131313.github.io/urlnote/ffmpeg';
+    }
+    const { FFmpeg } = await import(base + '/ffmpeg/index.js');
     const f = new FFmpeg();
     await f.load({
-      coreURL: '__BASE__/ffmpeg/core/ffmpeg-core.js',
-      wasmURL: '__BASE__/ffmpeg/core/ffmpeg-core.wasm',
+      coreURL: base + '/core/ffmpeg-core.js',
+      wasmURL: base + '/core/ffmpeg-core.wasm',
     });
     ffmpeg = f;
     return f;

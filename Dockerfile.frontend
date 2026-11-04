@@ -41,7 +41,8 @@ RUN cp -R static/vditor dist/vditor \
     && cp -R static/turndown dist/turndown \
     && cp -R static/pdfjs dist/pdfjs \
     && cp -R static/ffmpeg dist/ffmpeg \
-    && mkdir -p dist/dict && cp -R static/dict/. dist/dict/
+    && mkdir -p dist/dict && cp -R static/dict/. dist/dict/ \
+    && printf 'ffmpeg/\n' > dist/.assetsignore
 
 FROM nginx:1-alpine
 COPY --from=fe-build /app/rust/frontend/dist /usr/share/nginx/html

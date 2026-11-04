@@ -12,8 +12,18 @@ async function getEngine(onLoad?: (pct: number | null) => void): Promise<FFmpeg>
   if (engine?.loaded) return engine;
   loading ??= (async () => {
     onLoad?.(null); // 核心 ~31MB,首次下载无百分比
+    // CF 部署的静态资产有 25MiB 单文件上限,31MB 的核心被 .assetsignore 排除,
+    // 同源没有时回退到 GitHub Pages 托管的副本(Pages 的 CORS 为 *)
+    const local = `${(import.meta as any).env.BASE_URL || '/'}ffmpeg`;
+    const remote = 'https://java131313.github.io/urlnote/ffmpeg';
+    let base = local;
+    try {
+      const r = await fetch(`${base}/ffmpeg-core.js`, { method: 'HEAD' });
+      if (!r.ok) base = remote;
+    } catch {
+      base = remote;
+    }
     const f = new FFmpeg();
-    const base = `${(import.meta as any).env.BASE_URL || '/'}ffmpeg`;
     await f.load({
       coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, 'text/javascript'),
       wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, 'application/wasm'),

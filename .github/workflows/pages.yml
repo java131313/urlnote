@@ -99,6 +99,7 @@ jobs:
           cp -R rust/frontend/static/turndown rust/frontend/dist/turndown
           cp -R rust/frontend/static/pdfjs rust/frontend/dist/pdfjs
           cp -R rust/frontend/static/ffmpeg rust/frontend/dist/ffmpeg
+          printf 'ffmpeg/\n' > rust/frontend/dist/.assetsignore
           mkdir -p rust/frontend/dist/dict
           cp -R rust/frontend/static/dict/. rust/frontend/dist/dict/
 

@@ -47,6 +47,9 @@ rust-frontend:
 	# blow the Workers script size limit).
 	mkdir -p rust/frontend/dist/dict
 	cp -R rust/frontend/static/dict/. rust/frontend/dist/dict/
+	# ffmpeg 核心(31MB)超过 CF 静态资产单文件上限:wrangler 上传时排除,
+	# CF 部署的媒体页回退从 GitHub Pages 加载核心(rust/frontend/src/media.rs)
+	printf 'ffmpeg/\n' > rust/frontend/dist/.assetsignore
 
 rust-worker:
 	cd rust/worker && worker-build --release
