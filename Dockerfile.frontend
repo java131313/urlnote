@@ -13,7 +13,11 @@ RUN mkdir -p static/vditor static/mammoth static/turndown static/pdfjs \
     && cp node_modules/mammoth/mammoth.browser.min.js static/mammoth/ \
     && cp node_modules/turndown/dist/turndown.js static/turndown/ \
     && cp node_modules/pdfjs-dist/legacy/build/pdf.min.js \
-          node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js static/pdfjs/
+          node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js static/pdfjs/ \
+    && mkdir -p static/ffmpeg/ffmpeg static/ffmpeg/core \
+    && cp -R node_modules/@ffmpeg/ffmpeg/dist/esm/. static/ffmpeg/ffmpeg/ \
+    && cp node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js \
+          node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm static/ffmpeg/core/
 
 FROM rust:1-bookworm AS fe-build
 RUN rustup target add wasm32-unknown-unknown
@@ -31,6 +35,13 @@ ARG API_BASE=""
 ARG SUGGEST_LANG=""
 ENV BASE_PATH=$BASE_PATH API_BASE=$API_BASE SUGGEST_LANG=$SUGGEST_LANG
 RUN trunk build --release $(if [ -n "$BASE_PATH" ]; then echo "--public-url $BASE_PATH"; fi)
+# Trunk 0.22 不拷 static/ —— 与 make rust-frontend 对齐,手工补齐运行时资源
+RUN cp -R static/vditor dist/vditor \
+    && cp -R static/mammoth dist/mammoth \
+    && cp -R static/turndown dist/turndown \
+    && cp -R static/pdfjs dist/pdfjs \
+    && cp -R static/ffmpeg dist/ffmpeg \
+    && mkdir -p dist/dict && cp -R static/dict/. dist/dict/
 
 FROM nginx:1-alpine
 COPY --from=fe-build /app/rust/frontend/dist /usr/share/nginx/html

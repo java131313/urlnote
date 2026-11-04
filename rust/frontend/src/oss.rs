@@ -1880,15 +1880,15 @@ mod tests {
     #[test]
     fn signer_matches_python_reference() {
         let creds = OssCreds {
-            ak: "mpzfivcp",
-            sk: "96p89bwhdqpmhd6z",
+            ak: "TESTACCESSKEY",
+            sk: "fake-secret-key-for-unit-tests",
             region: "us-east-1",
             endpoint: "objectstorageapi.bja.sealos.run",
         };
         let sig = sign_request_with(
             &creds,
             "GET",
-            "/mpzfivcp-watchwonderful",
+            "/test-bucket",
             &[],
             b"",
             1767323045000.0,
@@ -1900,9 +1900,9 @@ mod tests {
         );
         assert_eq!(
             sig.authorization,
-            "AWS4-HMAC-SHA256 Credential=mpzfivcp/20260102/us-east-1/s3/aws4_request, \
+            "AWS4-HMAC-SHA256 Credential=TESTACCESSKEY/20260102/us-east-1/s3/aws4_request, \
              SignedHeaders=host;x-amz-content-sha256;x-amz-date, \
-             Signature=35716eb22305276af82b26f0e4c0b32efc35715796da8ff4f7d79d41c6d060bd"
+             Signature=61df9983846c3a678d1499dd8b7057c2c9ead369bf3e266b292146bacae7314f"
         );
     }
 

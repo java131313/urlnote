@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, newNoteId } from './api';
 import { Editor } from './Editor';
 import { Login } from './Login';
+import { MediaRoute } from './media/MediaPage';
 import { Picker } from './Picker';
 import { OssRoute } from './oss/OssPage';
 
@@ -15,11 +16,17 @@ function isOssHash(): boolean {
   return location.hash.replace(/^#\/?/, '') === 'oss';
 }
 
+/// 保留首段:媒体库页(#/media,与 oss 平级)
+function isMediaHash(): boolean {
+  return location.hash.replace(/^#\/?/, '') === 'media';
+}
+
 export default function App() {
   const [user, setUser] = useState<string | null | undefined>(undefined);
   const [noteId, setNoteId] = useState(noteIdFromHash);
   const [dirty, setDirty] = useState(false);
   const [oss, setOss] = useState(isOssHash);
+  const [media, setMedia] = useState(isMediaHash);
 
   useEffect(() => {
     api
@@ -31,6 +38,7 @@ export default function App() {
   useEffect(() => {
     const onHash = () => {
       setOss(isOssHash());
+      setMedia(isMediaHash());
       setNoteId(noteIdFromHash());
     };
     window.addEventListener('hashchange', onHash);
@@ -47,6 +55,7 @@ export default function App() {
   if (user === undefined) return <div className="boot">加载中…</div>;
   if (user === null) return <Login onOk={() => setUser('')} />;
   if (oss) return <OssRoute />;
+  if (media) return <MediaRoute />;
 
   return (
     <div className="app">
@@ -58,6 +67,9 @@ export default function App() {
         </button>
         <a className="tool oss-link" href="#/oss" title="对象存储文件库">
           🗂 文件库
+        </a>
+        <a className="tool media-link" href="#/media" title="媒体库(mp3/mp4 转码播放)">
+          🎬 媒体库
         </a>
         <span className="spacer" />
         {dirty && <span className="dirty-dot">● 未保存</span>}

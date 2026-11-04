@@ -16,6 +16,10 @@ rust-static:
 	mkdir -p rust/frontend/static/vditor
 	cp -R rust/frontend/node_modules/vditor/dist rust/frontend/static/vditor/dist
 	# import 转换库：mammoth(docx→html) / turndown(html→md) / pdfjs(pdf 文本)
+	rm -rf rust/frontend/static/ffmpeg
+	mkdir -p rust/frontend/static/ffmpeg/ffmpeg rust/frontend/static/ffmpeg/core
+	cp -R rust/frontend/node_modules/@ffmpeg/ffmpeg/dist/esm/. rust/frontend/static/ffmpeg/ffmpeg/
+	cp rust/frontend/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js rust/frontend/node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm rust/frontend/static/ffmpeg/core/
 	rm -rf rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
 	mkdir -p rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs
 	cp rust/frontend/node_modules/mammoth/mammoth.browser.min.js rust/frontend/static/mammoth/
@@ -30,6 +34,9 @@ rust-frontend:
 	# assets into the dist output so /vditor/* URLs resolve.
 	rm -rf rust/frontend/dist/vditor
 	cp -R rust/frontend/static/vditor rust/frontend/dist/vditor
+	# the same for ffmpeg.wasm(/media 播放器核心)与 import 转换库
+	rm -rf rust/frontend/dist/ffmpeg
+	cp -R rust/frontend/static/ffmpeg rust/frontend/dist/ffmpeg
 	# the same for the import conversion libraries (/mammoth /turndown /pdfjs)
 	rm -rf rust/frontend/dist/mammoth rust/frontend/dist/turndown rust/frontend/dist/pdfjs
 	cp -R rust/frontend/static/mammoth rust/frontend/dist/mammoth

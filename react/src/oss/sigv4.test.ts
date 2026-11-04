@@ -32,9 +32,9 @@ describe('sigv4', () => {
 
   it('signer_matches_python_reference', () => {
     const sig = signRequestWith(
-      { ak: 'mpzfivcp', sk: '96p89bwhdqpmhd6z', region: 'us-east-1', endpoint: 'objectstorageapi.bja.sealos.run' },
+      { ak: 'TESTACCESSKEY', sk: 'fake-secret-key-for-unit-tests', region: 'us-east-1', endpoint: 'objectstorageapi.bja.sealos.run' },
       'GET',
-      '/mpzfivcp-watchwonderful',
+      '/test-bucket',
       [],
       new Uint8Array(0),
       1767323045000,
@@ -42,9 +42,9 @@ describe('sigv4', () => {
     expect(sig.xAmzDate).toBe('20260102T030405Z');
     expect(sig.xAmzContentSha256).toBe('e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
     expect(sig.authorization).toBe(
-      'AWS4-HMAC-SHA256 Credential=mpzfivcp/20260102/us-east-1/s3/aws4_request, ' +
+      'AWS4-HMAC-SHA256 Credential=TESTACCESSKEY/20260102/us-east-1/s3/aws4_request, ' +
         'SignedHeaders=host;x-amz-content-sha256;x-amz-date, ' +
-        'Signature=35716eb22305276af82b26f0e4c0b32efc35715796da8ff4f7d79d41c6d060bd',
+        'Signature=61df9983846c3a678d1499dd8b7057c2c9ead369bf3e266b292146bacae7314f',
     );
   });
 

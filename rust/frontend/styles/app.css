@@ -1665,3 +1665,32 @@ header a:hover {
     color: #9ec2ff;
   }
 }
+
+/* ---- 媒体库(/media):左树右播放器,与 react 端同布局 ---- */
+.media-body { flex: 1; display: flex; min-height: 0; }
+.media-side {
+  width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border, #dde1e6); min-height: 0;
+}
+.media-side .oss-tree { flex: 1; overflow-y: auto; padding: 6px 4px; }
+.media-file-row { cursor: pointer; }
+.media-size { color: #888; font-size: 11px; margin-left: 6px; flex-shrink: 0; }
+.media-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.media-filebar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; font-size: 13px; color: #555;
+  border-bottom: 1px solid #dde1e6;
+}
+.media-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-stage {
+  flex: 1; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; padding: 20px; background: #111;
+}
+.media-video { max-width: 100%; max-height: 100%; background: #000; border-radius: 6px; }
+.media-audio { width: min(560px, 90%); }
+.media-hint { color: #bbb; font-size: 14px; text-align: center; max-width: 70%; line-height: 1.8; }
+.media-progress {
+  width: min(420px, 80%); height: 6px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15); overflow: hidden;
+}
+.media-progress-bar { height: 100%; background: #4c8dff; transition: width 0.2s ease; }
