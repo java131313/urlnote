@@ -20,6 +20,8 @@ web-sys = { version = "0.3", features = [
     "console",
     "BlobPropertyBag",
     "Crypto",
+    "css",
+    "CssStyleDeclaration",
     "DataTransfer",
     "Document",
     "DomRect",

@@ -88,6 +88,64 @@ pub(crate) fn keep_caret(apply: impl FnOnce()) {
     });
 }
 
+/// Vditor 给每个块级 pre 内联了居中 padding(如 padding: 10px 231px),
+/// zoom 会把它一起放大,字体变大时两边留白变宽。按 1/zoom 反写内联
+/// padding,保持留白视觉宽度不变。基准与上次反写值记在 data 属性里;
+/// 当前值与上次反写不符 = Vditor 重算过(窗口 resize),重新捕获基准。
+/// 等下一个宏任务再跑(Leptos effect 先把 zoom 写进 DOM)。
+pub(crate) fn apply_zoom_padding(zoom: f64) {
+    Timeout::new(0, move || {
+        let Ok(list) = document().query_selector_all(
+            ".vditor-wysiwyg pre.vditor-reset, .vditor-preview > .vditor-reset",
+        ) else {
+            return;
+        };
+        for i in 0..list.length() {
+            let Ok(el) = list.get(i).unwrap().dyn_into::<Element>() else {
+                continue;
+            };
+            let cs = match window().get_computed_style(&el) {
+                Ok(Some(c)) => c,
+                _ => continue,
+            };
+            let num = |p: &str| {
+                cs.get_property_value(p)
+                    .ok()
+                    .and_then(|v| v.trim_end_matches("px").trim().parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            let (cur_l, cur_r) = (num("padding-left"), num("padding-right"));
+            if cur_l <= 0.0 && cur_r <= 0.0 {
+                continue;
+            }
+            let mut base_l = cur_l;
+            let mut base_r = cur_r;
+            if let (Some(w), Some(b)) =
+                (el.get_attribute("data-zpad-w"), el.get_attribute("data-zpad-b"))
+            {
+                let wv: Vec<f64> = w.split(',').filter_map(|s| s.parse().ok()).collect();
+                let bv: Vec<f64> = b.split(',').filter_map(|s| s.parse().ok()).collect();
+                if wv.len() == 2
+                    && bv.len() == 2
+                    && (cur_l - wv[0]).abs() < 0.6
+                    && (cur_r - wv[1]).abs() < 0.6
+                {
+                    base_l = bv[0];
+                    base_r = bv[1];
+                }
+            }
+            let nl = base_l / zoom;
+            let nr = base_r / zoom;
+            if let Ok(he) = el.clone().dyn_into::<HtmlElement>() {
+                let _ = he.style().set_property("padding-left", &format!("{nl}px"));
+                let _ = he.style().set_property("padding-right", &format!("{nr}px"));
+            }
+            let _ = el.set_attribute("data-zpad-b", &format!("{base_l},{base_r}"));
+            let _ = el.set_attribute("data-zpad-w", &format!("{nl},{nr}"));
+        }
+    });
+}
+
 fn evt_input_value(e: &web_sys::Event) -> String {
     e.target()
         .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
@@ -932,10 +990,12 @@ impl Ctx {
     fn bump_font(&self, delta: i64) {
         crate::keep_caret(|| {
             let next = self.font_size.get() + delta;
-            self.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+            self.font_size
+                .set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
             // 字号不触发编辑器 input,要自己标脏,否则下次保存不会带上它
             self.mark_dirty();
         });
+        crate::apply_zoom_padding(self.font_size.get() as f64 / DEFAULT_FONT_SIZE as f64);
     }
 
     // ---- POS annotation overlay ----

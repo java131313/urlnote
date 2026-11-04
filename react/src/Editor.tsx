@@ -5,7 +5,7 @@ import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import { api, Note } from './api';
 import { ExpandIcon, ShrinkIcon } from './icons';
-import { keepCaretPos } from './keepCaret';
+import { keepCaretPos, applyZoomPadding } from './keepCaret';
 import { SuggestPanel, useSuggest } from './suggest';
 
 const DEFAULT_FONT = 16;
@@ -73,13 +73,16 @@ export function Editor(props: {
   const changeFont = useCallback(
     (f: number) => {
       const v = Math.max(10, Math.min(40, f));
-      keepCaretPos(() => {
-        fontSizeRef.current = v;
-        setFontSize(v);
-        dirty.current = true;
-        props.onDirty(true);
-        scheduleSave();
-      });
+      keepCaretPos(
+        () => {
+          fontSizeRef.current = v;
+          setFontSize(v);
+          dirty.current = true;
+          props.onDirty(true);
+          scheduleSave();
+        },
+        () => applyZoomPadding(hostRef.current, v / DEFAULT_FONT),
+      );
     },
     [props, scheduleSave],
   );

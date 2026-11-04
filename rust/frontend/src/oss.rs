@@ -700,6 +700,7 @@ fn bump_font(ctx: &OssCtx, delta: i64) {
         // 字号/颜色不触发编辑器 input,要自己标脏,否则保存按钮不亮、设置丢失
         ctx.dirty.set(true);
     });
+    crate::apply_zoom_padding(ctx.font_size.get() as f64 / DEFAULT_FONT_SIZE as f64);
 }
 
 fn evt_value(e: &web_sys::Event) -> String {

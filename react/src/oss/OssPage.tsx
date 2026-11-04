@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
 import { api } from '../api';
 import { ExpandIcon, ShrinkIcon } from '../icons';
-import { keepCaretPos } from '../keepCaret';
+import { keepCaretPos, applyZoomPadding } from '../keepCaret';
 import { SuggestPanel, useSuggest } from '../suggest';
 import { OSS_ENABLED } from './config';
 import { createCommentTool, createFontColorTool } from './editorTools';
@@ -745,11 +745,14 @@ function OssPage() {
                   className="tool"
                   title="缩小显示"
                   onClick={() =>
-                    keepCaretPos(() => {
-                      st.current.fontSize = Math.max(MIN_FONT_SIZE, s.fontSize - OSS_FONT_STEP);
-                      st.current.dirty = true;
-                      bump();
-                    })
+                    keepCaretPos(
+                      () => {
+                        st.current.fontSize = Math.max(MIN_FONT_SIZE, s.fontSize - OSS_FONT_STEP);
+                        st.current.dirty = true;
+                        bump();
+                      },
+                      () => applyZoomPadding(hostRef.current, st.current.fontSize / DEFAULT_FONT_SIZE),
+                    )
                   }
                 >
                   A−
@@ -759,11 +762,14 @@ function OssPage() {
                   className="tool"
                   title="放大显示"
                   onClick={() =>
-                    keepCaretPos(() => {
-                      st.current.fontSize = Math.min(MAX_FONT_SIZE, s.fontSize + OSS_FONT_STEP);
-                      st.current.dirty = true;
-                      bump();
-                    })
+                    keepCaretPos(
+                      () => {
+                        st.current.fontSize = Math.min(MAX_FONT_SIZE, s.fontSize + OSS_FONT_STEP);
+                        st.current.dirty = true;
+                        bump();
+                      },
+                      () => applyZoomPadding(hostRef.current, st.current.fontSize / DEFAULT_FONT_SIZE),
+                    )
                   }
                 >
                   A+
@@ -774,11 +780,14 @@ function OssPage() {
                     className="tool"
                     title="恢复默认大小"
                     onClick={() =>
-                      keepCaretPos(() => {
-                        st.current.fontSize = DEFAULT_FONT_SIZE;
-                        st.current.dirty = true;
-                        bump();
-                      })
+                      keepCaretPos(
+                        () => {
+                          st.current.fontSize = DEFAULT_FONT_SIZE;
+                          st.current.dirty = true;
+                          bump();
+                        },
+                        () => applyZoomPadding(hostRef.current, 1),
+                      )
                     }
                   >
                     A
