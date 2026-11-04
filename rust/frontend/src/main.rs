@@ -604,7 +604,8 @@ impl Ctx {
                 ed.editor.set_value(&content);
             }
         });
-        self.font_size.set(resolve_font_size(d.font_size as f64));
+        let fs = resolve_font_size(d.font_size as f64);
+        self.font_size.set(fs);
         self.color.set(if valid_color(&d.color) {
             d.color.clone()
         } else {
@@ -613,6 +614,7 @@ impl Ctx {
         self.title.set(d.title.clone());
         self.tags_text.set(d.tags.join(", "));
         self.author.set(d.author.clone());
+        crate::apply_zoom_padding(fs as f64 / DEFAULT_FONT_SIZE as f64);
         self.state.update_value(|st| {
             st.applying_remote = false;
             st.poll_updated_at = d.updated_at.clone();
@@ -745,7 +747,8 @@ impl Ctx {
                 c.set_status("加载失败", "error");
                 return;
             };
-            c.font_size.set(resolve_font_size(d.font_size as f64));
+            let fs = resolve_font_size(d.font_size as f64);
+            c.font_size.set(fs);
             c.color.set(if valid_color(&d.color) {
                 d.color.clone()
             } else {
@@ -754,6 +757,7 @@ impl Ctx {
             c.title.set(d.title.clone());
             c.tags_text.set(d.tags.join(", "));
             c.author.set(d.author.clone());
+            crate::apply_zoom_padding(fs as f64 / DEFAULT_FONT_SIZE as f64);
             c.state
                 .update_value(|st| st.poll_updated_at = d.updated_at.clone());
             c.set_status(if d.content.is_empty() { "" } else { "已加载" }, "");
@@ -2503,6 +2507,26 @@ fn App() -> impl IntoView {
         }
     });
 
+    // 窗口 resize 时 Vditor 重算块级 pre 的内联居中 padding(覆盖反写),
+    // 防抖后按当前 zoom 重放留白补偿
+    {
+        let ctx = ctx;
+        let deb: std::rc::Rc<std::cell::RefCell<Option<Timeout>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        ctx.state.update_value(|st| {
+            st.listeners.push(EventListener::new(&window(), "resize", move |_| {
+                let mut d = deb.borrow_mut();
+                if let Some(t) = d.take() {
+                    t.cancel();
+                }
+                let c = ctx;
+                *d = Some(Timeout::new(200, move || {
+                    crate::apply_zoom_padding(c.font_size.get() as f64 / DEFAULT_FONT_SIZE as f64);
+                }));
+            }));
+        });
+    }
+
     // Ctrl/Cmd +/- scales the editor, Ctrl/Cmd 0 resets it, Ctrl/Cmd S saves
     {
         let ctx = ctx;
@@ -2532,7 +2556,7 @@ fn App() -> impl IntoView {
                         }
                         "0" => {
                             e.prevent_default();
-                            ctx.font_size.set(DEFAULT_FONT_SIZE);
+                            ctx.bump_font(DEFAULT_FONT_SIZE - ctx.font_size.get());
                         }
                         _ => {}
                     }
@@ -3306,7 +3330,7 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                         type="button"
                         class="tool"
                         title="恢复默认大小 (Ctrl+0)"
-                        on:click=move |_| font_size.set(DEFAULT_FONT_SIZE)
+                        on:click=move |_| ctx.bump_font(DEFAULT_FONT_SIZE - ctx.font_size.get())
                     >
                         "A"
                     </button>
@@ -3319,14 +3343,21 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
                         let c = color.get();
                         if c.is_empty() { "#000000".to_string() } else { c }
                     }
-                    on:input=move |e| color.set(evt_input_value(&e))
+                    on:input=move |e| {
+                        color.set(evt_input_value(&e));
+                        // 颜色不触发编辑器 input,要自己标脏,否则不会随保存落盘
+                        ctx.mark_dirty();
+                    }
                 />
                 <Show when=move || !color.get().is_empty()>
                     <button
                         type="button"
                         class="tool"
                         title="恢复默认颜色"
-                        on:click=move |_| color.set(String::new())
+                        on:click=move |_| {
+                            color.set(String::new());
+                            ctx.mark_dirty();
+                        }
                     >
                         "默认"
                     </button>

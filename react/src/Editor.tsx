@@ -5,7 +5,7 @@ import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import { api, Note } from './api';
 import { ExpandIcon, ShrinkIcon } from './icons';
-import { keepCaretPos, applyZoomPadding } from './keepCaret';
+import { keepCaretPos, applyZoomPadding, watchZoomPadding } from './keepCaret';
 import { SuggestPanel, useSuggest } from './suggest';
 
 const DEFAULT_FONT = 16;
@@ -113,6 +113,12 @@ export function Editor(props: {
     else localStorage.removeItem('urlnote-suggest-lang');
   }, [lang]);
 
+  // 窗口 resize 后 Vditor 重算内联居中 padding,按当前 zoom 重放反写
+  useEffect(
+    () => watchZoomPadding(() => hostRef.current, () => fontSizeRef.current / DEFAULT_FONT),
+    [],
+  );
+
   // 最大化时 ESC 还原(词典面板打开时 ESC 先关面板,不退出最大化:
   // suggest 的捕获阶段处理器会 stopPropagation)
   useEffect(() => {
@@ -163,6 +169,8 @@ export function Editor(props: {
               colorRef.current = n.color || '';
               suppressUntil.current = Date.now() + 500;
               vd.setValue(n.content || '');
+              // 载入的字号非默认时,反写一次居中 padding(否则要等下次按 A± 才生效)
+              window.setTimeout(() => applyZoomPadding(hostRef.current, (n.font_size || DEFAULT_FONT) / DEFAULT_FONT), 200);
               dirty.current = false;
               props.onDirty(false);
               document.title = `${n.title || props.noteId} · urlnote`;
@@ -199,6 +207,7 @@ export function Editor(props: {
         colorRef.current = n.color || '';
         suppressUntil.current = Date.now() + 500;
         vd.setValue(n.content || '');
+        window.setTimeout(() => applyZoomPadding(hostRef.current, (n.font_size || DEFAULT_FONT) / DEFAULT_FONT), 200);
         dirty.current = false;
         props.onDirty(false);
         document.title = `${n.title || props.noteId} · urlnote`;

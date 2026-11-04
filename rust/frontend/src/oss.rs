@@ -661,6 +661,27 @@ thread_local! {
     static CTX: RefCell<Option<OssCtx>> = const { RefCell::new(None) };
     // document-level listeners (suggestion panel) kept alive for the page
     static LISTENERS: RefCell<Vec<EventListener>> = const { RefCell::new(Vec::new()) };
+    // resize 重算 padding 的防抖计时器
+    static RESIZE_DEBOUNCE: RefCell<Option<gloo_timers::callback::Timeout>> = const { RefCell::new(None) };
+}
+
+/// 窗口 resize 时 Vditor 重算块级 pre 的内联居中 padding(覆盖反写),
+/// 防抖后按当前 zoom 重放留白补偿(整个页面一个监听器)
+fn install_resize_keeper() {
+    LISTENERS.with(|l| {
+        l.borrow_mut().push(EventListener::new(&window(), "resize", move |_| {
+            RESIZE_DEBOUNCE.with(|d| {
+                let mut d = d.borrow_mut();
+                if let Some(t) = d.take() {
+                    t.cancel();
+                }
+                *d = Some(gloo_timers::callback::Timeout::new(200, move || {
+                    let ctx = ctx();
+                    crate::apply_zoom_padding(ctx.font_size.get() as f64 / DEFAULT_FONT_SIZE as f64);
+                }));
+            });
+        }));
+    });
 }
 
 const OSS_FONT_STEP: i64 = 2;
@@ -682,7 +703,10 @@ fn settings_json(ctx: &OssCtx) -> String {
 fn apply_settings(ctx: &OssCtx, text: &str) {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(text) else { return };
     if let Some(n) = v.get("font_size").and_then(|x| x.as_f64()) {
-        ctx.font_size.set(shared::resolve_font_size(n));
+        let fs = shared::resolve_font_size(n);
+        ctx.font_size.set(fs);
+        // 编辑器随 zoom 放大后,Vditor 新渲染块的内联居中 padding 需要按 1/zoom 反写
+        crate::apply_zoom_padding(fs as f64 / DEFAULT_FONT_SIZE as f64);
     }
     let c = v.get("color").and_then(|x| x.as_str()).unwrap_or_default();
     ctx.color.set(if valid_color(c) { c.to_string() } else { String::new() });
@@ -1546,6 +1570,7 @@ pub fn OssView() -> impl IntoView {
     // as the note editor — the keydown listener runs in the capture phase so
     // it can swallow Enter/Tab/Arrows before Vditor sees them.
     let insert = suggest_insert(ctx);
+    install_resize_keeper();
     LISTENERS.with(|l| {
         let sug = ctx.suggest;
         l.borrow_mut().push(EventListener::new(
@@ -1739,7 +1764,7 @@ pub fn OssView() -> impl IntoView {
                                     type="button"
                                     class="tool"
                                     title="恢复默认大小"
-                                    on:click=move |_| ctx.font_size.set(DEFAULT_FONT_SIZE)
+                                    on:click=move |_| bump_font(&ctx, DEFAULT_FONT_SIZE - ctx.font_size.get())
                                 >
                                     "A"
                                 </button>

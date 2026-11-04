@@ -50,6 +50,21 @@ function zoomOf(el: Element): number {
   return rectH > 0 && offH > 0 ? rectH / offH : 1;
 }
 
+/// 监听窗口 resize:Vditor 会重算内联居中 padding 并覆盖反写,
+/// 防抖后按当前 zoom 重放补偿。返回注销函数。
+export function watchZoomPadding(root: () => ParentNode | null, zoom: () => number) {
+  let timer: number | undefined;
+  const onResize = () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => applyZoomPadding(root(), zoom()), 200);
+  };
+  window.addEventListener('resize', onResize);
+  return () => {
+    window.removeEventListener('resize', onResize);
+    window.clearTimeout(timer);
+  };
+}
+
 /// Vditor 给每个块级 pre 内联了居中 padding(如 padding: 10px 231px),
 /// zoom 会把它一起放大,导致字体变大时两边留白变宽。按 1/zoom 反写内联
 /// padding,保持留白视觉宽度不变。基准与上次反写值记在 data 属性里;

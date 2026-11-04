@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
 import { api } from '../api';
 import { ExpandIcon, ShrinkIcon } from '../icons';
-import { keepCaretPos, applyZoomPadding } from '../keepCaret';
+import { keepCaretPos, applyZoomPadding, watchZoomPadding } from '../keepCaret';
 import { SuggestPanel, useSuggest } from '../suggest';
 import { OSS_ENABLED } from './config';
 import { createCommentTool, createFontColorTool } from './editorTools';
@@ -188,6 +188,12 @@ function OssPage() {
     }, [bump]),
   );
 
+  // 窗口 resize 后 Vditor 重算内联居中 padding,按当前 zoom 重放反写
+  useEffect(
+    () => watchZoomPadding(() => hostRef.current, () => st.current.fontSize / DEFAULT_FONT_SIZE),
+    [],
+  );
+
   const getRoot = useCallback(() => hostRef.current?.querySelector('.vditor-content') ?? null, []);
   const onHint = useCallback(
     (m: string) => {
@@ -239,6 +245,8 @@ function OssPage() {
     s.fontSize = typeof v.font_size === 'number' ? resolveFontSize(v.font_size) : DEFAULT_FONT_SIZE;
     s.color = typeof v.color === 'string' && validColor(v.color) ? v.color : '';
     bump();
+    // sidecar 载入的字号非默认时,反写一次居中 padding
+    window.setTimeout(() => applyZoomPadding(hostRef.current, st.current.fontSize / DEFAULT_FONT_SIZE), 200);
   };
 
   const openFile = (key: string, name: string) => {
