@@ -5,7 +5,6 @@
 //! wasm-bindgen (see vditor.rs).
 
 mod comment;
-mod media;
 mod oss;
 mod suggest;
 mod vditor;
@@ -2341,9 +2340,6 @@ fn App() -> impl IntoView {
     // (both sides link to each other; note ids never contain non-alphanumerics
     // so "oss" can never collide with a real note id). 文档库也要登录:
     // OssGate 先 whoami,未登录给登录表单(同便签页一道门)
-    if first_path_segment() == "media" {
-        return view! { <media::MediaGate/> }.into_any();
-    }
     if first_path_segment() == "oss" {
         return view! { <oss::OssGate/> }.into_any();
     }
@@ -2988,9 +2984,6 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
             </a>
             <a href=format!("{BASE_PATH}/oss") title="对象存储文件库">
                 "🗂 文件库"
-            </a>
-            <a href=format!("{BASE_PATH}/media") title="媒体库(mp3/mp4 转码播放)">
-                "🎬 媒体库"
             </a>
             <input
                 class="title-input"

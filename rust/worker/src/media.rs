@@ -30,7 +30,8 @@ fn oss_cfg(env: &Env) -> Option<OssCfg> {
         endpoint: v("OSS_ENDPOINT").unwrap_or_else(|| "objectstorageapi.bja.sealos.run".into()),
         ak: v("OSS_AK")?,
         sk: v("OSS_SK")?,
-        bucket: v("OSS_BUCKET")?,
+        // 与文件库前端同一个桶;桶名本就编译在公开前端包里,非秘密
+        bucket: v("OSS_BUCKET").unwrap_or_else(|| "mpzfivcp-watchwonderful".to_string()),
         region: v("OSS_REGION").unwrap_or_else(|| "us-east-1".into()),
     })
 }
@@ -121,7 +122,10 @@ struct SignedGet {
     x_amz_content_sha256: String,
 }
 
-fn sign_get(cfg: &OssCfg, key: &str, now_ms: f64) -> SignedGet {
+/// range = 请求头 Range 的值。有 range 时必须进签名(SignedHeaders 字典序
+/// host;range;x-amz-content-sha256;x-amz-date),206/Content-Range 透传,
+/// 前端 H5 播放器才能拖动进度条。
+fn sign_get(cfg: &OssCfg, key: &str, now_ms: f64, range: Option<&str>) -> SignedGet {
     let (amz, date_stamp) = fmt_times(now_ms);
     let payload_hash = sha256_hex(b"");
     // 空 key(列桶)不带尾斜杠
@@ -130,10 +134,23 @@ fn sign_get(cfg: &OssCfg, key: &str, now_ms: f64) -> SignedGet {
     } else {
         format!("/{}/{}", cfg.bucket, aws_uri_encode(key, false))
     };
-    let canonical = format!(
-        "GET\n{path}\n\nhost:{endpoint}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n\nhost;x-amz-content-sha256;x-amz-date\n{payload_hash}",
-        endpoint = cfg.endpoint,
-    );
+    let (headers_block, signed_headers) = match range {
+        Some(r) => (
+            format!(
+                "host:{endpoint}\nrange:{r}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n\nhost;range;x-amz-content-sha256;x-amz-date",
+                endpoint = cfg.endpoint,
+            ),
+            "host;range;x-amz-content-sha256;x-amz-date",
+        ),
+        None => (
+            format!(
+                "host:{endpoint}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz}\n\nhost;x-amz-content-sha256;x-amz-date",
+                endpoint = cfg.endpoint,
+            ),
+            "host;x-amz-content-sha256;x-amz-date",
+        ),
+    };
+    let canonical = format!("GET\n{path}\n\n{headers_block}\n{payload_hash}");
     let scope = format!("{date_stamp}/{}/s3/aws4_request", cfg.region);
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{amz}\n{scope}\n{}",
@@ -145,7 +162,7 @@ fn sign_get(cfg: &OssCfg, key: &str, now_ms: f64) -> SignedGet {
     k = hmac_sha256(&k, b"aws4_request");
     let sig = hex(&hmac_sha256(&k, string_to_sign.as_bytes()));
     let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={sig}",
+        "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={sig}",
         cfg.ak
     );
     SignedGet {
@@ -178,18 +195,27 @@ pub async fn stream_media(req: &Request, env: &Env, key: &str) -> Result<Respons
         Some(c) => c,
         None => {
             return Response::error(
-                "media storage not configured (OSS_AK/OSS_SK/OSS_BUCKET)",
+                "media storage not configured (OSS_AK/OSS_SK)",
                 503,
             )
         }
     };
-    let signed = sign_get(&cfg, key, Date::now().as_millis() as f64);
+    let range = req.headers().get("Range").ok().flatten();
+    let signed = sign_get(
+        &cfg,
+        key,
+        Date::now().as_millis() as f64,
+        range.as_deref(),
+    );
     let mut init = RequestInit::new();
     init.with_method(Method::Get);
     let headers = Headers::new();
     headers.set("Authorization", &signed.authorization)?;
     headers.set("X-Amz-Date", &signed.x_amz_date)?;
     headers.set("X-Amz-Content-Sha256", &signed.x_amz_content_sha256)?;
+    if let Some(r) = &range {
+        headers.set("Range", r)?;
+    }
     init.with_headers(headers);
     let mut upstream = Fetch::Request(Request::new_with_init(&signed.url, &init)?)
         .send()
@@ -198,7 +224,7 @@ pub async fn stream_media(req: &Request, env: &Env, key: &str) -> Result<Respons
     if status == 404 {
         return Response::error("not found", 404);
     }
-    if !(200..300).contains(&status) {
+    if !(200..300).contains(&status) && status != 206 {
         return Response::error(&format!("upstream HTTP {status}"), 502);
     }
     let out_headers = Headers::new();
@@ -208,6 +234,10 @@ pub async fn stream_media(req: &Request, env: &Env, key: &str) -> Result<Respons
     if let Ok(Some(cl)) = upstream.headers().get("Content-Length") {
         out_headers.set("Content-Length", &cl)?;
     }
+    if let Ok(Some(cr)) = upstream.headers().get("Content-Range") {
+        out_headers.set("Content-Range", &cr)?;
+    }
+    out_headers.set("Accept-Ranges", "bytes")?;
     let stream = upstream.stream()?;
     let resp = Response::from_stream(stream)?;
     Ok(resp.with_headers(out_headers))
@@ -235,7 +265,7 @@ mod tests {
     #[test]
     fn signer_matches_reference_vector() {
         // 与 rust/frontend、react 的 signer 共用同一参考向量
-        let signed = sign_get(&test_cfg(), "", 1767323045000.0);
+        let signed = sign_get(&test_cfg(), "", 1767323045000.0, None);
         assert_eq!(signed.x_amz_date, "20260102T030405Z");
         assert_eq!(
             signed.x_amz_content_sha256,

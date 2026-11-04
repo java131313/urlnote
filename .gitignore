@@ -27,6 +27,4 @@ data
 .DS_Store
 .wrangler/
 .idea/
-rust/frontend/static/ffmpeg
 react/public/vditor
-react/public/ffmpeg

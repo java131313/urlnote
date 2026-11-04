@@ -90,17 +90,26 @@ function sanitizeName(raw: string): string | null {
   return name && name !== '.' && name !== '..' ? name : null;
 }
 
-function fileKind(name: string): 'image' | 'pdf' | 'text' {
+function fileKind(name: string): 'image' | 'pdf' | 'media' | 'text' {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].includes(ext)) return 'image';
   if (ext === 'pdf') return 'pdf';
+  if (ext === 'mp3' || ext === 'mp4') return 'media';
   return 'text';
 }
 
 function fileIcon(name: string): string {
   const kind = fileKind(name);
-  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : '📄';
+  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : kind === 'media' ? (isAudioName(name) ? '🎵' : '🎬') : '📄';
 }
+
+function isAudioName(name: string): boolean {
+  return name.split('.').pop()?.toLowerCase() === 'mp3';
+}
+
+/// 后端媒体流地址(会话鉴权 + Range 支持,<video>/<audio> 直接引用)
+const mediaStreamUrl = (key: string) =>
+  `/api/media/stream/${key.split('/').map(encodeURIComponent).join('/')}`;
 
 function imageMime(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase() || '';
@@ -119,6 +128,7 @@ interface PageState {
   fontSize: number;
   color: string;
   previewUrl: string | null;
+  media: { key: string; name: string } | null;
 }
 
 export function OssRoute() {
@@ -153,6 +163,7 @@ function OssPage() {
     fontSize: DEFAULT_FONT_SIZE,
     color: '',
     previewUrl: null,
+    media: null,
   });
   const [, setVer] = useState(0);
   const bump = useCallback(() => setVer((v) => v + 1), []);
@@ -251,6 +262,7 @@ function OssPage() {
 
   const openFile = (key: string, name: string) => {
     st.current.status = `载入 ${name}…`;
+    st.current.media = null;
     bump();
     getObject(key)
       .then((text) => {
@@ -323,6 +335,10 @@ function OssPage() {
       s.dirty = false;
       vdRef.current?.setValue('');
       document.title = '文件库';
+    }
+    // 被删的媒体文件同步清掉播放器
+    if (s.media && (s.media.key === old || (old.endsWith('/') && s.media.key.startsWith(old))) && newPrefix === null) {
+      s.media = null;
     }
     bump();
   };
@@ -515,12 +531,26 @@ function OssPage() {
     void run();
   };
 
-  /// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开
+  /// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开;
+  /// mp3/mp4 → 编辑器区域换成 H5 播放器(不改当前文件/脏状态)
   const openEntry = (key: string, name: string) => {
     const kind = fileKind(name);
     if (kind === 'image') previewImage(key, name);
     else if (kind === 'pdf') openPdfAsMd(key, name);
+    else if (kind === 'media') openMedia(key, name);
     else openFile(key, name);
+  };
+
+  const openMedia = (key: string, name: string) => {
+    st.current.status = '';
+    st.current.media = { key, name };
+    suggest.close();
+    bump();
+  };
+
+  const closeMedia = () => {
+    st.current.media = null;
+    bump();
   };
 
   const previewImage = (key: string, name: string) => {
@@ -729,6 +759,25 @@ function OssPage() {
           </div>
         </aside>
         <main className={'oss-main' + (max ? ' maximized' : '')}>
+          {s.media && (
+            <div className="oss-filebar">
+              <span className="media-title">{s.media.name}</span>
+              <span className="oss-spacer" />
+              <button type="button" className="tool" onClick={closeMedia} title="关闭播放器,返回编辑器">
+                ✕ 返回编辑
+              </button>
+            </div>
+          )}
+          <div className="media-stage" style={{ display: s.media ? 'flex' : 'none' }}>
+            {s.media &&
+              (isAudioName(s.media.name) ? (
+                <audio key={s.media.key} controls autoPlay src={mediaStreamUrl(s.media.key)} className="media-audio" />
+              ) : (
+                <video key={s.media.key} controls autoPlay src={mediaStreamUrl(s.media.key)} className="media-video" />
+              ))}
+          </div>
+          {/* 编辑器整体隐藏而非卸载:Vditor 实例要存活,返回编辑时状态不丢 */}
+          <div style={{ display: s.media ? 'none' : 'contents' }}>
           <div className="oss-filebar">
             {s.currentName}
             {s.dirty && s.current && <span className="oss-dirty">● 未保存</span>}
@@ -847,6 +896,7 @@ function OssPage() {
             </button>
           </div>
           <div className="oss-editor" ref={hostRef} style={editorStyle} />
+          </div>
           <SuggestPanel state={suggest.state} onPick={suggest.accept} onHover={suggest.setActive} />
           <CommentDrawer ctl={cmt} />
           {max && (

@@ -650,6 +650,8 @@ struct OssCtx {
     color: RwSignal<String>,
     /// 图片预览的 object URL(点亮浮层时 Some)
     preview_url: RwSignal<Option<String>>,
+    /// H5 播放器打开的媒体文件(编辑器区域换成 <video>/<audio>)
+    media: RwSignal<Option<(String, String)>>,
     /// 编辑区最大化(ESC 还原)
     max: RwSignal<bool>,
     /// 批注(锚定文字)
@@ -839,6 +841,7 @@ fn file_kind(name: &str) -> &'static str {
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" => "image",
         "pdf" => "pdf",
+        "mp3" | "mp4" => "media",
         _ => "text",
     }
 }
@@ -847,17 +850,36 @@ fn file_icon(name: &str) -> &'static str {
     match file_kind(name) {
         "image" => "🖼️",
         "pdf" => "📕",
+        "media" => {
+            if name.rsplit('.').next().unwrap_or("").eq_ignore_ascii_case("mp3") {
+                "🎵"
+            } else {
+                "🎬"
+            }
+        }
         _ => "📄",
     }
 }
 
-/// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开
+/// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开;
+/// mp3/mp4 → 编辑器区域换成 H5 播放器(不改当前文件/脏状态)
 fn open_entry(key: String, name: String) {
     match file_kind(&name) {
         "image" => preview_image(key, name),
         "pdf" => open_pdf_as_md(key, name),
+        "media" => {
+            let ctx = ctx();
+            ctx.suggest.close();
+            ctx.media.set(Some((key, name)));
+        }
         _ => open_file(key, name),
     }
+}
+
+/// 后端媒体流地址(会话鉴权 + Range 支持,<video>/<audio> 直接引用)
+fn media_stream_url(key: &str) -> String {
+    let path = format!("/api/media/stream/{}", aws_uri_encode(key, false));
+    crate::api_url(&path)
 }
 
 fn image_mime(name: &str) -> &'static str {
@@ -972,6 +994,7 @@ async fn convert_pdf(bytes: &[u8], name: &str) -> Result<String, String> {
 
 fn open_file(key: String, name: String) {
     let ctx = ctx();
+    ctx.media.set(None);
     ctx.status.set(format!("载入 {name}…"));
     spawn_local(async move {
         match get_object(&key).await {
@@ -1528,6 +1551,7 @@ pub fn OssView() -> impl IntoView {
         font_size: RwSignal::new(DEFAULT_FONT_SIZE),
         color: RwSignal::new(String::new()),
         preview_url: RwSignal::new(None),
+        media: RwSignal::new(None),
         max: RwSignal::new(false),
         comments: CommentCtl::new(),
         suggest: Suggest::new(),
@@ -1734,6 +1758,29 @@ pub fn OssView() -> impl IntoView {
                 class="oss-main"
                 class:maximized=move || ctx.max.get()
             >
+                    // H5 播放器:点 mp3/mp4 时替换编辑器区域(编辑器仅隐藏,实例存活)
+                    <Show when=move || ctx.media.get().is_some()>
+                        <div class="oss-filebar">
+                            {move || ctx.media.get().map(|(_, n)| n)}
+                            <span class="oss-spacer"></span>
+                            <button type="button" class="tool" title="关闭播放器,返回编辑器"
+                                on:click=move |_| ctx.media.set(None)>
+                                "✕ 返回编辑"
+                            </button>
+                        </div>
+                        <div class="media-stage">
+                            {move || ctx.media.get().map(|(key, name)| {
+                                let url = media_stream_url(&key);
+                                if name.rsplit('.').next().unwrap_or("").eq_ignore_ascii_case("mp3") {
+                                    view! { <audio controls autoplay src=url class="media-audio"/> }.into_any()
+                                } else {
+                                    view! { <video controls autoplay src=url class="media-video"/> }.into_any()
+                                }
+                            })}
+                        </div>
+                    </Show>
+                    // 编辑器整体隐藏而非卸载,返回编辑时 Vditor 状态不丢
+                    <div style:display=move || if ctx.media.get().is_some() { "none" } else { "contents" }>
                     <div class="oss-filebar">
                         {move || ctx.current_name.get()}
                         {move || {
@@ -1825,6 +1872,7 @@ pub fn OssView() -> impl IntoView {
                             st
                         }
                     ></div>
+                    </div>
                     <SuggestPanel sug=ctx.suggest insert=insert/>
                     <CommentPanel ctl=ctx.comments content_root=".oss-editor .vditor-content"/>
                     <Show when=move || ctx.max.get()>
