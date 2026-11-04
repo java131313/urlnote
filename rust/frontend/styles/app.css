@@ -1624,6 +1624,20 @@ header a:hover {
   color: #174ea6;
 }
 
+/* 拖放移动:文件夹行与根目录行是投放目标,dragover 时高亮 */
+.oss-drag-over,
+.oss-drag-over:hover {
+  background: #d6e4ff;
+  outline: 2px dashed #174ea6;
+  outline-offset: -2px;
+}
+.oss-drag-over .oss-tname {
+  color: #174ea6;
+}
+.oss-root-drop {
+  color: #888;
+}
+
 @media (prefers-color-scheme: dark) {
   .oss-tkids {
     border-color: #3a4048;
@@ -1640,6 +1654,14 @@ header a:hover {
     background: #233a5e;
   }
   .oss-active .oss-tname {
+    color: #9ec2ff;
+  }
+  .oss-drag-over,
+  .oss-drag-over:hover {
+    background: #233a5e;
+    outline-color: #9ec2ff;
+  }
+  .oss-drag-over .oss-tname {
     color: #9ec2ff;
   }
 }

@@ -1170,6 +1170,152 @@ fn delete_entry(path: String, is_dir: bool) {
     });
 }
 
+// ---- 拖放移动(与 react/src/oss/OssPage.tsx 同行为) ----
+
+/// HTML5 拖放的负载类型:拖动文件树中的文件/文件夹
+const OSS_DND_MIME: &str = "application/x-urlnote-oss";
+
+fn drag_set(ev: &web_sys::DragEvent, key: &str, name: &str, is_dir: bool) {
+    if let Some(dt) = ev.data_transfer() {
+        let payload = serde_json::json!({ "key": key, "name": name, "isDir": is_dir }).to_string();
+        let _ = dt.set_data(OSS_DND_MIME, &payload);
+        let _ = dt.set_effect_allowed("move");
+    }
+}
+
+fn drag_read(ev: &web_sys::DragEvent) -> Option<(String, String, bool)> {
+    let raw = ev.data_transfer()?.get_data(OSS_DND_MIME).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some((
+        v.get("key")?.as_str()?.to_string(),
+        v.get("name")?.as_str()?.to_string(),
+        v.get("isDir").and_then(|b| b.as_bool()).unwrap_or(false),
+    ))
+}
+
+fn drag_highlight(ev: &web_sys::DragEvent, on: bool) {
+    if let Some(el) = ev
+        .current_target()
+        .map(|t| t.unchecked_into::<web_sys::Element>())
+    {
+        let list = el.class_list();
+        if on {
+            let _ = list.add_1("oss-drag-over");
+        } else {
+            let _ = list.remove_1("oss-drag-over");
+        }
+    }
+}
+
+/// 文件夹行/根目录行的 on:dragover:只认树内拖起的负载,可投放时高亮
+fn drag_allow(ev: web_sys::DragEvent) {
+    if let Some(dt) = ev.data_transfer() {
+        let types = dt.types();
+        let has = (0..types.length())
+            .any(|i| types.get(i).as_string().as_deref() == Some(OSS_DND_MIME));
+        if has {
+            ev.prevent_default();
+            ev.stop_propagation();
+            let _ = dt.set_drop_effect("move");
+            drag_highlight(&ev, true);
+        }
+    }
+}
+
+/// on:drop:把拖来的条目移动到 target_prefix('' = 根目录)
+fn drag_drop(ev: web_sys::DragEvent, target_prefix: &str) {
+    ev.prevent_default();
+    ev.stop_propagation();
+    drag_highlight(&ev, false);
+    if let Some((key, name, is_dir)) = drag_read(&ev) {
+        move_entry(&key, &name, is_dir, target_prefix);
+    }
+}
+
+/// 行内拖动起点:从操作按钮上拖起不算
+fn drag_start_row(ev: web_sys::DragEvent, key: &str, name: &str, is_dir: bool) {
+    if let Some(t) = ev.target() {
+        let el: web_sys::Element = t.unchecked_into();
+        if el.closest("button").ok().flatten().is_some() {
+            ev.prevent_default();
+            return;
+        }
+    }
+    drag_set(&ev, key, name, is_dir);
+}
+
+/// 拖动移动:文件走 rename_file_key,文件夹走 copy_prefix;target 为 "" = 根目录
+fn move_entry(key: &str, name: &str, is_dir: bool, target_prefix: &str) {
+    let ctx = ctx();
+    let parent = key
+        .trim_end_matches('/')
+        .rsplit_once('/')
+        .map(|(p, _)| format!("{p}/"))
+        .unwrap_or_default();
+    if parent == target_prefix {
+        return; // 已在目标目录
+    }
+    if is_dir && target_prefix.starts_with(key) {
+        return; // 不能拖进自己或自己的子树
+    }
+    let new_key = if is_dir {
+        format!("{target_prefix}{name}/")
+    } else {
+        format!("{target_prefix}{name}")
+    };
+    let where_ = if target_prefix.is_empty() {
+        "根目录".to_string()
+    } else {
+        target_prefix.to_string()
+    };
+    let confirm_msg = if is_dir {
+        format!("把文件夹 {name} 移动到 {where_}?(其中所有文件一起移动)")
+    } else {
+        format!("把 {name} 移动到 {where_}?")
+    };
+    if !window().confirm_with_message(&confirm_msg).unwrap_or(false) {
+        return;
+    }
+    ctx.status.set(format!("移动 {name}…"));
+    let key = key.to_string();
+    let name = name.to_string();
+    spawn_local(async move {
+        // 目标已有同名对象时二次确认,避免拖动误覆盖
+        match list_all_entries_under(&new_key).await {
+            Ok(conflicts) if !conflicts.is_empty() => {
+                if !window()
+                    .confirm_with_message(&format!(
+                        "目标已存在 {} 个对象,同名将被覆盖,继续?",
+                        conflicts.len()
+                    ))
+                    .unwrap_or(false)
+                {
+                    ctx.status.set("已取消".to_string());
+                    return;
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                ctx.status.set(e);
+                return;
+            }
+        }
+        let r = if is_dir {
+            copy_prefix(&key, &new_key).await
+        } else {
+            rename_file_key(&key, &new_key).await
+        };
+        match r {
+            Ok(()) => {
+                fix_current_after_move(&key, Some(&new_key));
+                ctx.status.set(format!("已移动 {name}"));
+                refresh_tree();
+            }
+            Err(e) => ctx.status.set(e),
+        }
+    });
+}
+
 #[component]
 fn TreeDir(prefix: String) -> AnyView {
     let ctx = ctx();
@@ -1179,10 +1325,18 @@ fn TreeDir(prefix: String) -> AnyView {
     let p_newdir = prefix.clone();
     let p_ren = prefix.clone();
     let p_del = prefix.clone();
+    let p_drag = prefix.clone();
+    let name_drag = node.with(|n| n.as_ref().map(|n| n.name.clone()).unwrap_or_default());
+    let p_drop = prefix.clone();
     view! {
         <div class="oss-tdir">
             <div
                 class="oss-trow"
+                draggable="true"
+                on:dragstart=move |ev| drag_start_row(ev, &p_drag, &name_drag, true)
+                on:dragover=move |ev| drag_allow(ev)
+                on:dragleave=move |ev| drag_highlight(&ev, false)
+                on:drop=move |ev| drag_drop(ev, &p_drop)
                 on:click=move |_| ctx.tree.update(|t| {
                     if let Some(n) = t.find_mut(&prefix.clone()) {
                         n.open = !n.open;
@@ -1232,6 +1386,8 @@ fn TreeDir(prefix: String) -> AnyView {
                             let key_ren = f.key.clone();
                             let key_del = f.key.clone();
                             let key_active = f.key.clone();
+                            let key_drag = f.key.clone();
+                            let name_drag = f.name.clone();
                             let label = f.name.clone();
                             let icon = file_icon(&label);
                             let ctx2 = ctx;
@@ -1239,6 +1395,8 @@ fn TreeDir(prefix: String) -> AnyView {
                                 <div
                                     class="oss-trow oss-tfile"
                                     class:oss-active=move || ctx2.current.get().as_deref() == Some(key_active.as_str())
+                                    draggable="true"
+                                    on:dragstart=move |ev| drag_start_row(ev, &key_drag, &name_drag, false)
                                 >
                                     <button type="button" class="oss-open"
                                         on:click=move |_| open_entry(key_open.clone(), name_open.clone())
@@ -1476,6 +1634,16 @@ pub fn OssView() -> impl IntoView {
                         </button>
                     </div>
                     <div class="oss-tree">
+                        <div
+                            class="oss-trow oss-root-drop"
+                            title="把文件/文件夹拖到此处移动到根目录"
+                            on:dragover=move |ev| drag_allow(ev)
+                            on:dragleave=move |ev| drag_highlight(&ev, false)
+                            on:drop=move |ev| drag_drop(ev, "")
+                        >
+                            <span class="oss-ticon">"📁"</span>
+                            <span class="oss-tname">"根目录"</span>
+                        </div>
                         {move || {
                             if ctx.tree.with(|t| t.dirs.is_empty() && t.files.is_empty()) {
                                 view! { <div class="oss-hint">"（空桶，点上方按钮新建）"</div> }.into_any()
@@ -1505,12 +1673,16 @@ pub fn OssView() -> impl IntoView {
                                 let key_ren = f.key.clone();
                                 let key_del = f.key.clone();
                                 let key_active = f.key.clone();
+                                let key_drag = f.key.clone();
+                                let name_drag = f.name.clone();
                                 let label = f.name.clone();
                                 let icon = file_icon(&label);
                                 view! {
                                     <div
                                         class="oss-trow oss-tfile"
                                         class:oss-active=move || ctx.current.get().as_deref() == Some(key_active.as_str())
+                                        draggable="true"
+                                        on:dragstart=move |ev| drag_start_row(ev, &key_drag, &name_drag, false)
                                     >
                                         <button type="button" class="oss-open"
                                             on:click=move |_| open_entry(key_open.clone(), name_open.clone())
@@ -1588,6 +1760,15 @@ pub fn OssView() -> impl IntoView {
                                 </button>
                             </Show>
                         </Show>
+                        <button
+                            type="button"
+                            class="tool oss-save"
+                            prop:disabled=move || !(ctx.dirty.get() && ctx.current.get().is_some())
+                            on:click=move |_| save_current()
+                            title="保存回对象存储"
+                        >
+                            "💾 保存"
+                        </button>
                         <button
                             type="button"
                             class="tool"
