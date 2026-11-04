@@ -28,3 +28,4 @@ data
 .wrangler/
 .idea/
 react/public/vditor
+rust/frontend/static/ffmpeg
