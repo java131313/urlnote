@@ -17,6 +17,7 @@ use worker::*;
 
 mod analyze;
 mod mark;
+mod media;
 mod token;
 
 // ---- in-memory LRU response cache (per isolate) ----
@@ -141,6 +142,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             save_note(req, &env, id).await // POST kept for API compatibility (was sendBeacon)
         }
         (Method::Get, ["api", "notes"]) => list_notes(&req, &env).await,
+        (Method::Get, ["api", "media", "stream", rest @ ..]) => {
+            media::stream_media(&req, &env, &media::decode_key(rest)).await
+        }
         (Method::Post, ["api", "login"]) => login(req, &env).await,
         (Method::Post, ["api", "logout"]) => logout(&req, &env).await,
         (Method::Get, ["api", "whoami"]) => whoami(&req, &env).await,

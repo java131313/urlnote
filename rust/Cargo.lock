@@ -3821,6 +3821,7 @@ dependencies = [
 name = "urlnote-worker"
 version = "0.1.0"
 dependencies = [
+ "hmac 0.12.1",
  "jieba-rs",
  "js-sys",
  "lru",
