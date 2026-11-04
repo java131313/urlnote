@@ -80,7 +80,9 @@ body {
 .oss-floatbar .oss-status { min-width: 60px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 字号/颜色(CSS 变量,与 Rust 版同机制) */
-.editor-host .vditor { border: none; height: auto; font-family: -apple-system, 'SF Mono', Menlo, Consolas, monospace; color: var(--note-color, inherit); }
+/* Vditor 把 .vditor 类加在挂载元素自身(editor-host)上,必须用复合选择器;
+   后代写法 .editor-host .vditor 永远匹配不到,--note-color 因此丢失 */
+.editor-host.vditor { border: none; height: auto; font-family: -apple-system, 'SF Mono', Menlo, Consolas, monospace; color: var(--note-color, inherit); }
 .editor-host .vditor-content { flex: 1; min-height: 0; overflow-y: auto; zoom: var(--note-zoom, 1); }
 .editor-host :is(.vditor-wysiwyg, .vditor-preview) pre.vditor-reset:not(:has(> code)) { color: inherit; }
 
@@ -224,7 +226,7 @@ a.tool { text-decoration: none; display: inline-block; }
 /* 字号/颜色(CSS 变量,与便签编辑器同机制,作用域 .oss-editor) */
 .oss-editor .vditor-content { zoom: var(--oss-zoom, 1); }
 .oss-editor :is(.vditor-wysiwyg, .vditor-preview) pre.vditor-reset:not(:has(> code)) { color: inherit; }
-.oss-editor .vditor { height: 100%; border: 0; }
+.oss-editor.vditor { height: 100%; border: 0; }
 
 .oss-lightbox {
   position: fixed; inset: 0;

@@ -1471,8 +1471,8 @@ header a:hover {
 .oss-editor :is(.vditor-wysiwyg, .vditor-preview) pre.vditor-reset:not(:has(> code)) {
   color: inherit;
 }
-.oss-editor .vditor {
-
+/* Vditor 把 .vditor 类加在挂载元素(.oss-editor)自身,须用复合选择器 */
+.oss-editor.vditor {
   height: 100%;
   border: 0;
 }
