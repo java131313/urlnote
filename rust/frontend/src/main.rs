@@ -878,6 +878,8 @@ impl Ctx {
     fn bump_font(&self, delta: i64) {
         let next = self.font_size.get() + delta;
         self.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+        // 字号不触发编辑器 input,要自己标脏,否则下次保存不会带上它
+        self.mark_dirty();
     }
 
     // ---- POS annotation overlay ----

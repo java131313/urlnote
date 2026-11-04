@@ -28,6 +28,9 @@ export function Editor(props: {
   const [note, setNote] = useState<Note | null>(null);
   const [fontSize, setFontSize] = useState(DEFAULT_FONT);
   const [color, setColor] = useState('');
+  // 字号/颜色经 ref 双写:doSave 在 800ms 后才执行,直接读 state 会拿到旧值
+  const fontSizeRef = useRef(DEFAULT_FONT);
+  const colorRef = useRef('');
   const [status, setStatus] = useState('');
   const [max, setMax] = useState(false);
   const [lang, setLang] = useState(() => localStorage.getItem('urlnote-suggest-lang') || (import.meta as any).env.VITE_SUGGEST_LANG || '');
@@ -51,19 +54,42 @@ export function Editor(props: {
         content: vd.getValue(),
         title: note?.title || '',
         tags: note?.tags || [],
-        font_size: fontSize,
-        color,
+        font_size: fontSizeRef.current,
+        color: colorRef.current,
       });
       markSaved(n);
     } catch (e) {
       setStatus('保存失败,将随下次编辑重试');
     }
-  }, [props.noteId, note?.title, note?.tags, fontSize, color, markSaved]);
+  }, [props.noteId, note?.title, note?.tags, markSaved]);
 
   const scheduleSave = useCallback(() => {
     window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(doSave, 800);
   }, [doSave]);
+
+  // 字号/颜色不触发 Vditor 的 input,要手动标脏并调度保存,否则重开便签设置丢失
+  const changeFont = useCallback(
+    (f: number) => {
+      const v = Math.max(10, Math.min(40, f));
+      fontSizeRef.current = v;
+      setFontSize(v);
+      dirty.current = true;
+      props.onDirty(true);
+      scheduleSave();
+    },
+    [props, scheduleSave],
+  );
+  const changeColor = useCallback(
+    (c: string) => {
+      colorRef.current = c;
+      setColor(c);
+      dirty.current = true;
+      props.onDirty(true);
+      scheduleSave();
+    },
+    [props, scheduleSave],
+  );
 
   const { state: suggest, langs, accept, setActive } = useSuggest(
     props.canEdit,
@@ -127,6 +153,8 @@ export function Editor(props: {
               setNote(n);
               setFontSize(n.font_size || DEFAULT_FONT);
               setColor(n.color || '');
+              fontSizeRef.current = n.font_size || DEFAULT_FONT;
+              colorRef.current = n.color || '';
               suppressUntil.current = Date.now() + 500;
               vd.setValue(n.content || '');
               dirty.current = false;
@@ -161,6 +189,8 @@ export function Editor(props: {
         setNote(n);
         setFontSize(n.font_size || DEFAULT_FONT);
         setColor(n.color || '');
+        fontSizeRef.current = n.font_size || DEFAULT_FONT;
+        colorRef.current = n.color || '';
         suppressUntil.current = Date.now() + 500;
         vd.setValue(n.content || '');
         dirty.current = false;
@@ -219,14 +249,14 @@ export function Editor(props: {
             scheduleSave();
           }}
         />
-        <button type="button" className="tool" title="缩小" onClick={() => setFontSize((f) => Math.max(10, f - FONT_STEP))}>
+        <button type="button" className="tool" title="缩小" onClick={() => changeFont(fontSize - FONT_STEP)}>
           A−
         </button>
-        <button type="button" className="tool" title="放大" onClick={() => setFontSize((f) => Math.min(40, f + FONT_STEP))}>
+        <button type="button" className="tool" title="放大" onClick={() => changeFont(fontSize + FONT_STEP)}>
           A+
         </button>
         {fontSize !== DEFAULT_FONT && (
-          <button type="button" className="tool" onClick={() => setFontSize(DEFAULT_FONT)}>
+          <button type="button" className="tool" onClick={() => changeFont(DEFAULT_FONT)}>
             A
           </button>
         )}
@@ -235,10 +265,10 @@ export function Editor(props: {
           className="tool color"
           title="文字颜色"
           value={color || '#000000'}
-          onChange={(e) => setColor(e.target.value)}
+          onChange={(e) => changeColor(e.target.value)}
         />
         {color && (
-          <button type="button" className="tool" onClick={() => setColor('')}>
+          <button type="button" className="tool" onClick={() => changeColor('')}>
             默认
           </button>
         )}

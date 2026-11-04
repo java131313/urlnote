@@ -745,6 +745,7 @@ function OssPage() {
                   title="缩小显示"
                   onClick={() => {
                     st.current.fontSize = Math.max(MIN_FONT_SIZE, s.fontSize - OSS_FONT_STEP);
+                    st.current.dirty = true;
                     bump();
                   }}
                 >
@@ -756,6 +757,7 @@ function OssPage() {
                   title="放大显示"
                   onClick={() => {
                     st.current.fontSize = Math.min(MAX_FONT_SIZE, s.fontSize + OSS_FONT_STEP);
+                    st.current.dirty = true;
                     bump();
                   }}
                 >
@@ -768,6 +770,7 @@ function OssPage() {
                     title="恢复默认大小"
                     onClick={() => {
                       st.current.fontSize = DEFAULT_FONT_SIZE;
+                      st.current.dirty = true;
                       bump();
                     }}
                   >
@@ -781,6 +784,7 @@ function OssPage() {
                   value={s.color || '#000000'}
                   onChange={(e) => {
                     st.current.color = e.target.value;
+                    st.current.dirty = true;
                     bump();
                   }}
                 />
@@ -791,6 +795,7 @@ function OssPage() {
                     title="恢复默认颜色"
                     onClick={() => {
                       st.current.color = '';
+                      st.current.dirty = true;
                       bump();
                     }}
                   >

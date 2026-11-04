@@ -696,6 +696,8 @@ fn reset_settings(ctx: &OssCtx) {
 fn bump_font(ctx: &OssCtx, delta: i64) {
     let next = ctx.font_size.get() + delta;
     ctx.font_size.set(next.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE));
+    // 字号/颜色不触发编辑器 input,要自己标脏,否则保存按钮不亮、设置丢失
+    ctx.dirty.set(true);
 }
 
 fn evt_value(e: &web_sys::Event) -> String {
@@ -1747,7 +1749,10 @@ pub fn OssView() -> impl IntoView {
                                     let c = ctx.color.get();
                                     if c.is_empty() { "#000000".to_string() } else { c }
                                 }
-                                on:input=move |e| ctx.color.set(evt_value(&e))
+                                on:input=move |e| {
+                                    ctx.color.set(evt_value(&e));
+                                    ctx.dirty.set(true);
+                                }
                             />
                             <Show when=move || !ctx.color.get().is_empty()>
                                 <button
