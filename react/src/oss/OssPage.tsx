@@ -3,7 +3,7 @@
 //! 保存直接写回桶,绕过 D1。S3 请求在浏览器内做 SigV4 签名(见 sigv4.ts)。
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Vditor from 'vditor';
-import { api } from '../api';
+import { api, type OfficeEditorCfg } from '../api';
 import { ExpandIcon, ShrinkIcon } from '../icons';
 import { keepCaretPos, applyZoomPadding, watchZoomPadding } from '../keepCaret';
 import { SuggestPanel, useSuggest } from '../suggest';
@@ -132,7 +132,7 @@ interface PageState {
   color: string;
   previewUrl: string | null;
   media: { key: string; name: string } | null;
-  office: { key: string; name: string; url: string } | null;
+  office: { key: string; name: string; ds: string; cfg: OfficeEditorCfg['config']; elId: string } | null;
 }
 
 export function OssRoute() {
@@ -152,9 +152,34 @@ export function OssRoute() {
   return <OssPage />;
 }
 
+interface DocsEditor {
+  destroyEditor: () => void;
+}
+
+/// 按文档服务器地址缓存加载 ONLYOFFICE DocsAPI(api.js)。
+const docsApiLoading = new Map<string, Promise<void>>();
+function loadDocsApi(ds: string): Promise<void> {
+  let p = docsApiLoading.get(ds);
+  if (!p) {
+    p = new Promise<void>((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = `${ds}/web-apps/apps/api/documents/api.js`;
+      s.onload = () => resolve();
+      s.onerror = () => {
+        docsApiLoading.delete(ds);
+        reject(new Error('DocsAPI 脚本加载失败'));
+      };
+      document.head.appendChild(s);
+    });
+    docsApiLoading.set(ds, p);
+  }
+  return p;
+}
+
 function OssPage() {
   const hostRef = useRef<HTMLDivElement>(null);
   const vdRef = useRef<Vditor | null>(null);
+  const officeEditorRef = useRef<DocsEditor | null>(null);
   const suppressUntil = useRef(0);
   // 页面级状态走 ref + 版本号(与 Rust 的命令式信号同构:处理器多、互相接力,
   // 全量 setState 反而容易在异步回调里拿到过期值)
@@ -538,7 +563,7 @@ function OssPage() {
   };
 
   /// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开;
-  /// mp3/mp4 → 编辑器区域换成 H5 播放器;Office → Collabora 在线编辑(iframe)。
+  /// mp3/mp4 → 编辑器区域换成 H5 播放器;Office → ONLYOFFICE 在线编辑(DocsAPI)。
   /// 后两者都不改当前文件/脏状态。
   const openEntry = (key: string, name: string) => {
     const kind = fileKind(name);
@@ -555,7 +580,7 @@ function OssPage() {
     api
       .officeConfig(key)
       .then((d) => {
-        st.current.office = { key, name, url: d.url };
+        st.current.office = { key, name, ds: d.ds, cfg: d.config, elId: `ods-${Date.now()}` };
         st.current.media = null;
         st.current.status = '';
         suggest.close();
@@ -715,6 +740,36 @@ function OssPage() {
   }, []);
 
   const s = st.current;
+
+  /// Office 面板:加载 DocsAPI 并实例化编辑器;office 关闭/切换时销毁。
+  const officeElId = s.office?.elId;
+  useEffect(() => {
+    if (!officeElId) return;
+    const o = st.current.office;
+    if (!o) return;
+    let alive = true;
+    loadDocsApi(o.ds)
+      .then(() => {
+        if (!alive || st.current.office?.elId !== o.elId) return;
+        const w = window as unknown as {
+          DocsAPI?: { DocEditor: new (id: string, cfg: unknown) => DocsEditor };
+        };
+        if (!w.DocsAPI) throw new Error('DocsAPI 未就绪');
+        officeEditorRef.current?.destroyEditor();
+        officeEditorRef.current = new w.DocsAPI.DocEditor(o.elId, o.cfg);
+      })
+      .catch((e) => {
+        if (!alive) return;
+        st.current.status = e instanceof Error ? e.message : String(e);
+        bump();
+      });
+    return () => {
+      alive = false;
+      officeEditorRef.current?.destroyEditor();
+      officeEditorRef.current = null;
+    };
+  }, [officeElId]);
+
   const editorStyle = {
     '--oss-zoom': (s.fontSize / DEFAULT_FONT_SIZE).toFixed(3),
     ...(s.color ? { '--oss-color': s.color } : {}),
@@ -805,21 +860,13 @@ function OssPage() {
             <div className="oss-filebar">
               <span className="media-title">{s.office.name}</span>
               <span className="oss-spacer" />
-              <span className="oss-status">Collabora 在线编辑,保存自动回写存储</span>
+              <span className="oss-status">ONLYOFFICE 在线编辑,保存自动回写存储</span>
               <button type="button" className="tool" onClick={closeOffice} title="关闭编辑器,返回文件库">
                 ✕ 返回编辑
               </button>
             </div>
           )}
-          {s.office && (
-            <iframe
-              key={s.office.key}
-              src={s.office.url}
-              className="office-frame"
-              title="collabora"
-              allow="clipboard-read; clipboard-write"
-            />
-          )}
+          {s.office && <div key={s.office.elId} id={s.office.elId} className="office-frame" />}
           <div className="media-stage" style={{ display: s.media ? 'flex' : 'none' }}>
             {s.media &&
               (isAudioName(s.media.name) ? (

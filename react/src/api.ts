@@ -100,6 +100,17 @@ function commentUrls(doc: string): { list: string; post: string; del: (id: strin
   return { list: `/api/comments?doc=${enc}`, post: `/api/comments`, del: (id) => `/api/comments/${id}` };
 }
 
+/// ONLYOFFICE DocsAPI 编辑器配置(/api/office/config 返回)。
+/// 前端加载 `${ds}/web-apps/apps/api/documents/api.js` 后 new DocsAPI.DocEditor(el, config)。
+export interface OfficeEditorCfg {
+  ds: string;
+  config: {
+    document: { url: string; fileType: string; title: string; key: string };
+    documentType: string;
+    editorConfig: Record<string, unknown>;
+  };
+}
+
 export const api = {
   whoami: () => req<{ user: { username: string } }>('/api/whoami'),
   login: (username: string, password: string) =>
@@ -129,8 +140,8 @@ export const api = {
     return r.json() as Promise<PosDocResponse>;
   },
 
-  // Collabora 在线编辑:换 iframe URL(token 有过期,用完即弃)
-  officeConfig: (key: string) => req<{ url: string }>(`/api/office/config?key=${encodeURIComponent(key)}`),
+  // ONLYOFFICE 在线编辑:换 DocsAPI 配置(token 有过期,用完即弃)
+  officeConfig: (key: string) => req<OfficeEditorCfg>(`/api/office/config?key=${encodeURIComponent(key)}`),
 };
 
 export function newNoteId(): string {

@@ -1,12 +1,15 @@
-//! Collabora Online / ONLYOFFICE Document Server(WOPI 客户端)的 WOPI 宿主。
+//! ONLYOFFICE Document Server(DocsAPI)集成的文档编辑/保存通道。
 //!
-//! - `GET /api/office/config?key=`(会话鉴权):签发 WOPI token,拼好 iframe
-//!   URL 返回前端。浏览器直连文档服务器(本机 Docker 或 Sealos 部署),
-//!   WOPISrc 指向本服务。默认按 ONLYOFFICE 格式拼
-//!   `/hosting/wopi/{word|cell|slide}/edit?wopisrc=...`;
-//!   设置 `OFFICE_SERVER_URL` 指向任意 WOPI 客户端。
-//! - `GET /wopi/files/{id}`:CheckFileInfo;`.../contents` GET/PUT:下载/回写 S3。
-//! - `POST /wopi/files/{id}`:X-WOPI-Override 分发(PUT 保存、LOCK/UNLOCK 等)。
+//! - `GET /api/office/config?key=`(会话鉴权):返回 `{ds, config}`,前端加载
+//!   `${ds}/web-apps/apps/api/documents/api.js` 后 `new DocsAPI.DocEditor(el, config)`。
+//!   浏览器直连文档服务器(本机 Docker 或 Sealos 部署);`OFFICE_SERVER_URL` 可指向
+//!   任意 ODS 实例。
+//! - 打开:`config.document.url` 指向 `/wopi/files/{id}/contents?access_token=..`
+//!   (下方 WOPI 子集,token 鉴权,ODS 服务端来拉);`document.key` = id。
+//! - 保存:ODS 回调 `POST /api/office/callback?id=..&token=..`(Document
+//!   Editing Service 协议,status 2/6 时回拉 body.url 写回 S3)。
+//! - 其余 `/wopi/files/{id}` 端点(CheckFileInfo/LOCK 等)为完整 WOPI 宿主实现,
+//!   Collabora 直连仍可用(把 OFFICE_SERVER_URL 指回 Collabora 时按需恢复 iframe 模式)。
 //!
 //! token = `v1.<exp_unix>.<hex hmac>`,密钥为进程启动时的随机值(个人单用户,
 //! token 生命周期只覆盖一次编辑会话,重启失效重开即可)。id = url-safe
@@ -138,7 +141,34 @@ fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// GET /api/office/config?key= —— 前端(会话)换取 iframe URL。
+/// 文档服务器地址:OFFICE_SERVER_URL 优先,兼容旧 COLLABORA_URL。
+fn office_server_url() -> String {
+    std::env::var("OFFICE_SERVER_URL")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            std::env::var("COLLABORA_URL")
+                .ok()
+                .map(|v| v.trim().trim_end_matches('/').to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| "http://localhost:9980".to_string())
+}
+
+/// 扩展名 → ONLYOFFICE 的 documentType(word/cell/slide)。
+fn doc_type(key: &str) -> &'static str {
+    match key.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
+        "xlsx" | "ods" => "cell",
+        "pptx" | "odp" => "slide",
+        _ => "word",
+    }
+}
+
+/// GET /api/office/config?key= —— 前端(会话)换取 ONLYOFFICE DocsAPI 配置。
+/// 前端拿 {ds, config} 后加载 `${ds}/web-apps/apps/api/documents/api.js`,
+/// new DocsAPI.DocEditor(el, config)。文件下载复用 /wopi/files/{id}/contents
+/// (token 鉴权);保存走 editorConfig.callbackUrl(见 office_callback)。
 pub async fn config(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -155,37 +185,79 @@ pub async fn config(
         return Err(json_err(StatusCode::NOT_FOUND, "not found"));
     }
     let id = key_to_id(&key);
-    let (token, ttl_ms) = mint_token(&id);
+    let (token, _ttl_ms) = mint_token(&id);
     let (scheme, host) = host_origin(&headers);
-    let wopi_src = format!("{scheme}://{host}/wopi/files/{id}");
-    // 文档服务器地址:OFFICE_SERVER_URL 优先,兼容旧 COLLABORA_URL。
-    let ds = std::env::var("OFFICE_SERVER_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            std::env::var("COLLABORA_URL")
-                .ok()
-                .map(|v| v.trim().trim_end_matches('/').to_string())
-                .filter(|v| !v.is_empty())
-        })
-        .unwrap_or_else(|| "http://localhost:9980".to_string());
-    // ONLYOFFICE WOPI 客户端的打开格式(即 /hosting/discovery 的 urlsrc 形态):
-    //   {ds}/hosting/wopi/{word|cell|slide}/edit?wopisrc=<enc>&access_token=..
-    // 按扩展名选应用;WOPISrc 不带 token,由客户端回传。
-    let app = match key.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
-        "xlsx" | "ods" => "cell",
-        "pptx" | "odp" => "slide",
-        _ => "word",
-    };
-    let enc_src: String = url::form_urlencoded::byte_serialize(wopi_src.as_bytes()).collect();
-    let edit_url = format!(
-        "{ds}/hosting/wopi/{app}/edit?wopisrc={enc_src}&access_token={token}&access_token_ttl={ttl_ms}"
-    );
-    let payload = serde_json::json!({ "url": edit_url });
+    let file_name = key.rsplit('/').next().unwrap_or(&key).to_string();
+    let file_type = file_name.rsplit('.').next().unwrap_or_default().to_string();
+    let base = format!("{scheme}://{host}");
+    let ds = office_server_url();
+    let payload = serde_json::json!({
+        "ds": ds,
+        "config": {
+            "document": {
+                "url": format!("{base}/wopi/files/{id}/contents?access_token={token}"),
+                "fileType": file_type,
+                "title": file_name,
+                "key": id,
+            },
+            "documentType": doc_type(&key),
+            "editorConfig": {
+                "callbackUrl": format!("{base}/api/office/callback?id={id}&token={token}"),
+                "mode": "edit",
+                "lang": "zh-CN",
+                "user": { "id": "admin", "name": "admin" },
+            },
+        },
+    });
     Ok(crate::util::json_vec(
         StatusCode::OK,
         serde_json::to_vec(&payload).unwrap(),
+    ))
+}
+
+/// POST /api/office/callback —— ONLYOFFICE Document Editing Service 回调。
+/// status 2(可保存)/6(强制保存)时 body.url 为改后文件,从文档服务器回拉、
+/// 回写 S3。token 与 config 签发的一致;url 限定已配置的文档服务器(防 SSRF)。
+pub async fn office_callback(
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let id = q.get("id").cloned().unwrap_or_default();
+    let token = q.get("token").cloned().unwrap_or_default();
+    let key = id_to_key(&id).ok_or_else(|| json_err(StatusCode::UNAUTHORIZED, "invalid token"))?;
+    if !valid_office_key(&key) || !valid_token(&id, &token) {
+        return Err(json_err(StatusCode::UNAUTHORIZED, "invalid token"));
+    }
+    let v: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| json_err(StatusCode::BAD_REQUEST, "bad json"))?;
+    let status = v.get("status").and_then(|s| s.as_i64()).unwrap_or(0);
+    if status == 2 || status == 6 {
+        let url = v
+            .get("url")
+            .and_then(|u| u.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let ds = office_server_url();
+        if !url.starts_with(&format!("{ds}/")) {
+            return Err(json_err(StatusCode::BAD_REQUEST, "bad url"));
+        }
+        let resp = reqwest::get(&url)
+            .await
+            .map_err(|e| json_err(StatusCode::BAD_GATEWAY, &e.to_string()))?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| json_err(StatusCode::BAD_GATEWAY, &e.to_string()))?;
+        let cfg = s3ops::S3Cfg::from_env()
+            .ok_or_else(|| json_err(StatusCode::SERVICE_UNAVAILABLE, "storage not configured"))?;
+        s3ops::put_object(&cfg, &key, &bytes)
+            .await
+            .map_err(|e| json_err(StatusCode::BAD_GATEWAY, &e))?;
+    }
+    // 其余状态(1 编辑中/3 保存错误/4 无改动/7 强制保存错误)一律应答成功。
+    Ok(crate::util::json_vec(
+        StatusCode::OK,
+        serde_json::to_vec(&serde_json::json!({ "error": 0 })).unwrap(),
     ))
 }
 
@@ -358,9 +430,10 @@ pub async fn put_contents(
 
 /// WOPI 路由(挂在 / 上;上传体 64MB 上限,Office 文档富余)。
 pub fn router() -> Router<AppState> {
-    use axum::routing::get;
+    use axum::routing::{get, post};
     Router::new()
         .route("/api/office/config", get(config))
+        .route("/api/office/callback", post(office_callback))
         .route(
             "/wopi/files/{id}",
             get(check_file_info).post(wopi_post),
