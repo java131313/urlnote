@@ -1,7 +1,9 @@
-//! Collabora Online(WOPI 客户端)的 WOPI 宿主。
+//! Collabora Online / ONLYOFFICE Document Server(WOPI 客户端)的 WOPI 宿主。
 //!
 //! - `GET /api/office/config?key=`(会话鉴权):签发 WOPI token,拼好 iframe
-//!   URL 返回前端。浏览器直连本机 Docker 里的 Collabora,WOPISrc 指向本服务。
+//!   URL 返回前端。浏览器直连文档服务器(本机 Docker 或 Sealos 部署),
+//!   WOPISrc 指向本服务。默认按 ONLYOFFICE 格式拼 `/webeditor/?file=...`;
+//!   设置 `OFFICE_SERVER_URL` 指向任意 WOPI 客户端。
 //! - `GET /wopi/files/{id}`:CheckFileInfo;`.../contents` GET/PUT:下载/回写 S3。
 //! - `POST /wopi/files/{id}`:X-WOPI-Override 分发(PUT 保存、LOCK/UNLOCK 等)。
 //!
@@ -90,21 +92,28 @@ fn json_err(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorResponse>) 
     crate::util::json_error(status, msg)
 }
 
-/// 从 WOPI 请求取 token:Collabora 把 access_token 放在 Authorization 头(原样)。
-fn bearer(headers: &HeaderMap) -> Option<String> {
+/// 从 WOPI 请求取 token:优先 Authorization 头(Collabora 惯例),
+/// 兼容 URL query `access_token`(ONLYOFFICE 惯例)。
+fn bearer(headers: &HeaderMap, query_token: Option<&str>) -> Option<String> {
     headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| query_token.map(str::to_string))
 }
 
 /// 校验 id + token;key 必须落在 office 扩展名内。返回 S3 key。
-fn auth_wopi(id: &str, headers: &HeaderMap) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
+fn auth_wopi(
+    id: &str,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
     let key = id_to_key(id).ok_or_else(|| json_err(StatusCode::NOT_FOUND, "not found"))?;
     if !valid_office_key(&key) {
         return Err(json_err(StatusCode::NOT_FOUND, "not found"));
     }
-    match bearer(headers) {
+    match bearer(headers, query_token) {
         Some(t) if valid_token(id, &t) => Ok(key),
         _ => Err(json_err(StatusCode::UNAUTHORIZED, "invalid token")),
     }
@@ -148,16 +157,23 @@ pub async fn config(
     let (token, ttl_ms) = mint_token(&id);
     let (scheme, host) = host_origin(&headers);
     let wopi_src = format!("{scheme}://{host}/wopi/files/{id}");
-    let collabora = match std::env::var("COLLABORA_URL") {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
-        _ => "http://localhost:9980".to_string(),
-    };
-    let file_name = key.rsplit('/').next().unwrap_or(&key);
-    let mut edit_url = format!(
-        "{collabora}/browser/dist/cool.html?WOPISrc={}&access_token={token}&access_token_ttl={ttl_ms}&lang=zh-CN",
-        url::form_urlencoded::byte_serialize(wopi_src.as_bytes()).collect::<String>(),
+    // 文档服务器地址:OFFICE_SERVER_URL 优先,兼容旧 COLLABORA_URL。
+    let ds = std::env::var("OFFICE_SERVER_URL")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            std::env::var("COLLABORA_URL")
+                .ok()
+                .map(|v| v.trim().trim_end_matches('/').to_string())
+                .filter(|v| !v.is_empty())
+        })
+        .unwrap_or_else(|| "http://localhost:9980".to_string());
+    // ONLYOFFICE WOPI 客户端的打开格式;WOPISrc 不带 token,由客户端回传。
+    let enc_src: String = url::form_urlencoded::byte_serialize(wopi_src.as_bytes()).collect();
+    let edit_url = format!(
+        "{ds}/webeditor/?file={enc_src}&action=edit&access_token={token}&access_token_ttl={ttl_ms}"
     );
-    edit_url.push_str(&format!("&title={}", url::form_urlencoded::byte_serialize(file_name.as_bytes()).collect::<String>()));
     let payload = serde_json::json!({ "url": edit_url });
     Ok(crate::util::json_vec(
         StatusCode::OK,
@@ -169,8 +185,9 @@ pub async fn config(
 pub async fn check_file_info(
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let key = auth_wopi(&id, &headers)?;
+    let key = auth_wopi(&id, &headers, q.get("access_token").map(String::as_str))?;
     let cfg = s3ops::S3Cfg::from_env()
         .ok_or_else(|| json_err(StatusCode::SERVICE_UNAVAILABLE, "storage not configured"))?;
     let size = s3ops::object_size(&cfg, &key)
@@ -182,8 +199,14 @@ pub async fn check_file_info(
         "Size": size,
         "OwnerId": "admin",
         "UserId": "admin",
+        "UserFriendlyName": "admin",
         "UserCanWrite": true,
         "UserCanNotWriteRelative": true,
+        "ReadOnly": false,
+        "SupportsUpdate": true,
+        "SupportsLock": true,
+        "SupportsGetLock": true,
+        "SupportsExtendedLockLength": true,
         "PostMessageOrigin": "*",
         "LastModifiedTime": now_rfc3339(),
     });
@@ -193,12 +216,13 @@ pub async fn check_file_info(
     ))
 }
 
-/// GET /wopi/files/{id}/contents —— Collabora 拉文件。
+/// GET /wopi/files/{id}/contents —— 文档服务器拉文件。
 pub async fn get_contents(
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let key = auth_wopi(&id, &headers)?;
+    let key = auth_wopi(&id, &headers, q.get("access_token").map(String::as_str))?;
     let cfg = s3ops::S3Cfg::from_env()
         .ok_or_else(|| json_err(StatusCode::SERVICE_UNAVAILABLE, "storage not configured"))?;
     let bytes = s3ops::object_bytes(&cfg, &key)
@@ -251,9 +275,10 @@ fn header_val(headers: &HeaderMap, name: &str) -> Option<String> {
 pub async fn wopi_post(
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let key = auth_wopi(&id, &headers)?;
+    let key = auth_wopi(&id, &headers, q.get("access_token").map(String::as_str))?;
     let ov = header_val(&headers, "x-wopi-override").unwrap_or_default();
     match ov.to_ascii_uppercase().as_str() {
         "PUT" | "PUT_CONTENT" | "PATCH_CONTENT" => save_contents(&key, &body).await,
@@ -316,9 +341,10 @@ async fn save_contents(key: &str, body: &[u8]) -> Result<Response, (StatusCode, 
 pub async fn put_contents(
     headers: HeaderMap,
     Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
-    let key = auth_wopi(&id, &headers)?;
+    let key = auth_wopi(&id, &headers, q.get("access_token").map(String::as_str))?;
     save_contents(&key, &body).await
 }
 
