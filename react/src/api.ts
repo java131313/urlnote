@@ -128,6 +128,9 @@ export const api = {
     if (!r.ok) throw new ApiError(r.status, await r.text().catch(() => ''));
     return r.json() as Promise<PosDocResponse>;
   },
+
+  // Collabora 在线编辑:换 iframe URL(token 有过期,用完即弃)
+  officeConfig: (key: string) => req<{ url: string }>(`/api/office/config?key=${encodeURIComponent(key)}`),
 };
 
 export function newNoteId(): string {

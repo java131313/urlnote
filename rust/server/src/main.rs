@@ -13,6 +13,8 @@ mod media;
 mod misc;
 mod nlp;
 mod notes;
+mod office;
+mod s3ops;
 mod seed;
 mod token;
 mod util;
@@ -146,6 +148,7 @@ fn api_router(st: AppState) -> Router {
         .route("/api/search", get(notes::search_notes))
         .route("/api/search/reindex", post(notes::reindex_search))
         .route("/api/media/stream/{*key}", get(media::stream_media))
+        .merge(office::router())
         .route(
             "/api/pdf2md",
             post(misc::pdf_to_md).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES + UPLOAD_HEADROOM)),

@@ -90,17 +90,20 @@ function sanitizeName(raw: string): string | null {
   return name && name !== '.' && name !== '..' ? name : null;
 }
 
-function fileKind(name: string): 'image' | 'pdf' | 'media' | 'text' {
+const OFFICE_EXTS = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp'];
+
+function fileKind(name: string): 'image' | 'pdf' | 'media' | 'office' | 'text' {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].includes(ext)) return 'image';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'mp3' || ext === 'mp4') return 'media';
+  if (OFFICE_EXTS.includes(ext)) return 'office';
   return 'text';
 }
 
 function fileIcon(name: string): string {
   const kind = fileKind(name);
-  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : kind === 'media' ? (isAudioName(name) ? '🎵' : '🎬') : '📄';
+  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : kind === 'media' ? (isAudioName(name) ? '🎵' : '🎬') : kind === 'office' ? '📘' : '📄';
 }
 
 function isAudioName(name: string): boolean {
@@ -129,6 +132,7 @@ interface PageState {
   color: string;
   previewUrl: string | null;
   media: { key: string; name: string } | null;
+  office: { key: string; name: string; url: string } | null;
 }
 
 export function OssRoute() {
@@ -164,6 +168,7 @@ function OssPage() {
     color: '',
     previewUrl: null,
     media: null,
+    office: null,
   });
   const [, setVer] = useState(0);
   const bump = useCallback(() => setVer((v) => v + 1), []);
@@ -263,6 +268,7 @@ function OssPage() {
   const openFile = (key: string, name: string) => {
     st.current.status = `载入 ${name}…`;
     st.current.media = null;
+    st.current.office = null;
     bump();
     getObject(key)
       .then((text) => {
@@ -532,18 +538,45 @@ function OssPage() {
   };
 
   /// 文件树点击分发:md → 编辑器;图片 → 预览浮层;PDF → 后端转 md 打开;
-  /// mp3/mp4 → 编辑器区域换成 H5 播放器(不改当前文件/脏状态)
+  /// mp3/mp4 → 编辑器区域换成 H5 播放器;Office → Collabora 在线编辑(iframe)。
+  /// 后两者都不改当前文件/脏状态。
   const openEntry = (key: string, name: string) => {
     const kind = fileKind(name);
     if (kind === 'image') previewImage(key, name);
     else if (kind === 'pdf') openPdfAsMd(key, name);
     else if (kind === 'media') openMedia(key, name);
+    else if (kind === 'office') openOffice(key, name);
     else openFile(key, name);
+  };
+
+  const openOffice = (key: string, name: string) => {
+    st.current.status = `打开 ${name}…`;
+    bump();
+    api
+      .officeConfig(key)
+      .then((d) => {
+        st.current.office = { key, name, url: d.url };
+        st.current.media = null;
+        st.current.status = '';
+        suggest.close();
+        bump();
+      })
+      .catch((e) => {
+        st.current.status = errMsg(e);
+        bump();
+      });
+  };
+
+  const closeOffice = () => {
+    st.current.office = null;
+    bump();
+    refreshTree(); // Collabora 保存回写后刷新目录(大小/时间)
   };
 
   const openMedia = (key: string, name: string) => {
     st.current.status = '';
     st.current.media = { key, name };
+    st.current.office = null;
     suggest.close();
     bump();
   };
@@ -768,6 +801,25 @@ function OssPage() {
               </button>
             </div>
           )}
+          {s.office && (
+            <div className="oss-filebar">
+              <span className="media-title">{s.office.name}</span>
+              <span className="oss-spacer" />
+              <span className="oss-status">Collabora 在线编辑,保存自动回写存储</span>
+              <button type="button" className="tool" onClick={closeOffice} title="关闭编辑器,返回文件库">
+                ✕ 返回编辑
+              </button>
+            </div>
+          )}
+          {s.office && (
+            <iframe
+              key={s.office.key}
+              src={s.office.url}
+              className="office-frame"
+              title="collabora"
+              allow="clipboard-read; clipboard-write"
+            />
+          )}
           <div className="media-stage" style={{ display: s.media ? 'flex' : 'none' }}>
             {s.media &&
               (isAudioName(s.media.name) ? (
@@ -777,7 +829,7 @@ function OssPage() {
               ))}
           </div>
           {/* 编辑器整体隐藏而非卸载:Vditor 实例要存活,返回编辑时状态不丢 */}
-          <div style={{ display: s.media ? 'none' : 'contents' }}>
+          <div style={{ display: s.media || s.office ? 'none' : 'contents' }}>
           <div className="oss-filebar">
             {s.currentName}
             {s.dirty && s.current && <span className="oss-dirty">● 未保存</span>}
