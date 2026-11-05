@@ -2,7 +2,8 @@
 //!
 //! - `GET /api/office/config?key=`(会话鉴权):签发 WOPI token,拼好 iframe
 //!   URL 返回前端。浏览器直连文档服务器(本机 Docker 或 Sealos 部署),
-//!   WOPISrc 指向本服务。默认按 ONLYOFFICE 格式拼 `/webeditor/?file=...`;
+//!   WOPISrc 指向本服务。默认按 ONLYOFFICE 格式拼
+//!   `/hosting/wopi/{word|cell|slide}/edit?wopisrc=...`;
 //!   设置 `OFFICE_SERVER_URL` 指向任意 WOPI 客户端。
 //! - `GET /wopi/files/{id}`:CheckFileInfo;`.../contents` GET/PUT:下载/回写 S3。
 //! - `POST /wopi/files/{id}`:X-WOPI-Override 分发(PUT 保存、LOCK/UNLOCK 等)。
@@ -169,10 +170,17 @@ pub async fn config(
                 .filter(|v| !v.is_empty())
         })
         .unwrap_or_else(|| "http://localhost:9980".to_string());
-    // ONLYOFFICE WOPI 客户端的打开格式;WOPISrc 不带 token,由客户端回传。
+    // ONLYOFFICE WOPI 客户端的打开格式(即 /hosting/discovery 的 urlsrc 形态):
+    //   {ds}/hosting/wopi/{word|cell|slide}/edit?wopisrc=<enc>&access_token=..
+    // 按扩展名选应用;WOPISrc 不带 token,由客户端回传。
+    let app = match key.rsplit('.').next().unwrap_or_default().to_ascii_lowercase().as_str() {
+        "xlsx" | "ods" => "cell",
+        "pptx" | "odp" => "slide",
+        _ => "word",
+    };
     let enc_src: String = url::form_urlencoded::byte_serialize(wopi_src.as_bytes()).collect();
     let edit_url = format!(
-        "{ds}/webeditor/?file={enc_src}&action=edit&access_token={token}&access_token_ttl={ttl_ms}"
+        "{ds}/hosting/wopi/{app}/edit?wopisrc={enc_src}&access_token={token}&access_token_ttl={ttl_ms}"
     );
     let payload = serde_json::json!({ "url": edit_url });
     Ok(crate::util::json_vec(
@@ -350,7 +358,7 @@ pub async fn put_contents(
 
 /// WOPI 路由(挂在 / 上;上传体 64MB 上限,Office 文档富余)。
 pub fn router() -> Router<AppState> {
-    use axum::routing::{get, post, put};
+    use axum::routing::get;
     Router::new()
         .route("/api/office/config", get(config))
         .route(
