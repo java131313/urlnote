@@ -288,10 +288,6 @@ fn bridge_handle(
             .map(|(_, v)| urldecode(v))
             .unwrap_or_default()
     };
-    if q("token") != token {
-        return cors(ok("{\"error\":\"forbidden\"}".into(), "application/json").with_status_code(403));
-    }
-
     if *req.method() == tiny_http::Method::Options {
         return cors(ok(String::new(), "text/plain"));
     }
@@ -303,6 +299,9 @@ fn bridge_handle(
             cors(ok(html, "text/html; charset=utf-8"))
         }
         (tiny_http::Method::Get, "/editor/doc") => {
+            if q("token") != token {
+                return cors(ok("{\"error\":\"forbidden\"}".into(), "application/json").with_status_code(403));
+            }
             let id = q("id");
             let d = doc.lock().unwrap();
             if d.id != id {
@@ -314,6 +313,9 @@ fn bridge_handle(
             ))
         }
         (tiny_http::Method::Post, "/editor/doc") => {
+            if q("token") != token {
+                return cors(ok("{\"error\":\"forbidden\"}".into(), "application/json").with_status_code(403));
+            }
             let id = q("id");
             let mut body = String::new();
             if req.as_reader().read_to_string(&mut body).is_err() {
@@ -333,6 +335,9 @@ fn bridge_handle(
             cors(ok("{\"ok\":true}".into(), "application/json"))
         }
         (tiny_http::Method::Post, "/editor/upload") => {
+            if q("token") != token {
+                return cors(ok("{\"succMap\":{}}".into(), "application/json"));
+            }
             // 简易 multipart 解析(vditor 单文件字段 file[]),转发后端 /api/upload。
             let mut body = Vec::new();
             if req.as_reader().read_to_end(&mut body).is_err() {
