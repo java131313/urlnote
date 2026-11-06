@@ -12,6 +12,8 @@ use shared::{
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
+mod s3;
+
 /// 后端地址(与 Web 前端 VITE_API_BASE 一致)。
 const API: &str = "https://yyuqmndqpnjr.sealosbja.site";
 
@@ -29,6 +31,12 @@ enum Msg {
     Dict(Result<DictLookupResponse, String>),
     Langs(Vec<DictLang>),
     Logout,
+    // ---- 文件库(S3) ----
+    OssCreds(Result<s3::OssCreds, String>),
+    OssList(Result<(String, s3::ListResult), String>),
+    OssGot(Result<(String, String, String), String>), // key, 正文, settings.json
+    OssPut(Result<String, String>),                   // key
+    OssDelete(Result<(), String>),
 }
 
 /// 后台线程执行请求,完成后经 channel 回 UI 线程并触发重绘。
@@ -131,6 +139,69 @@ enum Screen {
     Main,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Notes,
+    Oss,
+}
+
+struct OssFileEd {
+    key: String,
+    content: String,
+    font_size: i64,
+    color: String,
+    dirty: bool,
+    last_edit: Instant,
+    saving: bool,
+}
+
+impl OssFileEd {
+    fn mark_edit(&mut self) {
+        self.dirty = true;
+        self.last_edit = Instant::now();
+    }
+}
+
+struct OssState {
+    creds: Option<s3::OssCreds>,
+    creds_err: String,
+    /// 当前目录 prefix("" = 根)。
+    prefix: String,
+    dirs: Vec<String>,
+    files: Vec<s3::ListedFile>,
+    loading: bool,
+    current: Option<OssFileEd>,
+    new_file: bool,
+    new_folder: bool,
+    input: String,
+    confirm_delete: Option<(String, bool)>, // (name, 是否目录)
+    status: String,
+}
+
+impl OssState {
+    fn new() -> Self {
+        Self {
+            creds: None,
+            creds_err: String::new(),
+            prefix: String::new(),
+            dirs: Vec::new(),
+            files: Vec::new(),
+            loading: false,
+            current: None,
+            new_file: false,
+            new_folder: false,
+            input: String::new(),
+            confirm_delete: None,
+            status: String::new(),
+        }
+    }
+    fn close_dialogs(&mut self) {
+        self.new_file = false;
+        self.new_folder = false;
+        self.confirm_delete = None;
+    }
+}
+
 struct UrlnoteApp {
     ctx: egui::Context,
     client: reqwest::blocking::Client,
@@ -154,6 +225,8 @@ struct UrlnoteApp {
     dict: DictState,
     /// 编辑器光标当前字节位置(由 TextEditOutput 回填)。
     cursor_index: usize,
+    view: View,
+    oss: OssState,
 }
 
 impl UrlnoteApp {
@@ -183,6 +256,8 @@ impl UrlnoteApp {
             status: String::new(),
             dict: DictState::new(),
             cursor_index: 0,
+            view: View::Notes,
+            oss: OssState::new(),
         };
         // 启动时探测既有会话(cookie jar 为空,必然未登录,仅校验连通性)。
         let tx0 = app.rx_tx();
@@ -375,6 +450,125 @@ impl UrlnoteApp {
         self.dict.close();
     }
 
+    // ---- 文件库(S3) ----
+
+    fn enter_oss(&mut self) {
+        self.view = View::Oss;
+        if self.oss.creds.is_some() {
+            if self.oss.files.is_empty() && self.oss.dirs.is_empty() {
+                self.oss_list(String::new());
+            }
+            return;
+        }
+        if !self.oss.creds_err.is_empty() {
+            return; // 已尝试过且失败(错误显示在面板上)
+        }
+        let tx = self.rx_tx();
+        go(&self.client, &self.ctx, &tx, |_| Msg::OssCreds(s3::load_creds()));
+    }
+
+    fn oss_list(&mut self, prefix: String) {
+        self.oss.loading = true;
+        let Some(creds) = self.oss.creds.clone() else { return };
+        let tx = self.rx_tx();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let res = s3::list_dir(c, &creds, &prefix).map(|r| (prefix.clone(), r));
+            Msg::OssList(res)
+        });
+    }
+
+    fn oss_open(&mut self, key: String) {
+        self.oss_save_now();
+        let Some(creds) = self.oss.creds.clone() else { return };
+        self.oss.status = format!("打开 {}…", key.rsplit('/').next().unwrap_or(&key));
+        let tx = self.rx_tx();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let content = s3::get_object(c, &creds, &key).map(|o| o.unwrap_or_default());
+            let settings = s3::get_object(c, &creds, &format!("{key}.settings.json"))
+                .map(|o| o.unwrap_or_default());
+            let res = match (content, settings) {
+                (Ok(content), Ok(settings)) => Ok((key.clone(), content, settings)),
+                (Err(e), _) => Err(e),
+                (_, Err(e)) => Err(e),
+            };
+            Msg::OssGot(res)
+        });
+    }
+
+    fn oss_save_now(&mut self) {
+        let Some(f) = &mut self.oss.current else { return };
+        if f.dirty && !f.saving {
+            f.saving = true;
+            f.dirty = false;
+            let creds = match &self.oss.creds {
+                Some(c) => c.clone(),
+                None => return,
+            };
+            let key = f.key.clone();
+            let content = f.content.clone();
+            let settings = format!(
+                "{{\"font_size\":{},\"color\":\"{}\"}}",
+                f.font_size,
+                f.color.replace('"', "")
+            );
+            let tx = self.rx_tx();
+            go(&self.client, &self.ctx, &tx, move |c| {
+                let res = s3::put_object(c, &creds, &key, content.as_bytes())
+                    .and_then(|_| s3::put_object(c, &creds, &format!("{key}.settings.json"), settings.as_bytes()))
+                    .map(|_| key.clone());
+                Msg::OssPut(res)
+            });
+        }
+    }
+
+    fn oss_create(&mut self, folder: bool) {
+        let name = self.oss.input.trim().trim_matches('/').to_string();
+        if name.is_empty() {
+            return;
+        }
+        self.oss.input.clear();
+        self.oss.new_file = false;
+        self.oss.new_folder = false;
+        let key = if folder {
+            format!("{}{name}/.keep", self.oss.prefix)
+        } else {
+            format!("{}{name}", self.oss.prefix)
+        };
+        let Some(creds) = self.oss.creds.clone() else { return };
+        let prefix = self.oss.prefix.clone();
+        let tx = self.rx_tx();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let res = s3::put_object(c, &creds, &key, b"").map(|_| prefix.clone());
+            Msg::OssPut(res)
+        });
+    }
+
+    fn oss_delete(&mut self, name: String, is_dir: bool) {
+        let Some(creds) = self.oss.creds.clone() else { return };
+        let key = format!("{}{name}", self.oss.prefix);
+        let tx = self.rx_tx();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let res = if is_dir {
+                match s3::list_all_keys(c, &creds, &key) {
+                    Ok(keys) => {
+                        let mut last = Ok(());
+                        for k in keys {
+                            if let Err(e) = s3::delete_object(c, &creds, &k) {
+                                last = Err(e);
+                                break;
+                            }
+                        }
+                        last
+                    }
+                    Err(e) => Err(e),
+                }
+            } else {
+                s3::delete_object(c, &creds, &key)
+            };
+            Msg::OssDelete(res)
+        });
+    }
+
     /// 用选中的词典词替换光标前的锚词。
     fn insert_word_at_cursor(&mut self, word: &str) {
         let Some(ed) = &mut self.current else { return };
@@ -465,6 +659,76 @@ impl UrlnoteApp {
                     self.notes.clear();
                     self.dict.close();
                 }
+                Msg::OssCreds(res) => match res {
+                    Ok(c) => {
+                        self.oss.creds = Some(c);
+                        self.oss_list(String::new());
+                    }
+                    Err(e) => self.oss.creds_err = e,
+                },
+                Msg::OssList(res) => {
+                    self.oss.loading = false;
+                    match res {
+                        Ok((prefix, r)) => {
+                            self.oss.prefix = prefix;
+                            self.oss.dirs = r.dirs;
+                            self.oss.files = r.files;
+                        }
+                        Err(e) => self.oss.status = e,
+                    }
+                }
+                Msg::OssGot(res) => {
+                    self.oss.status.clear();
+                    match res {
+                        Ok((key, content, settings)) => {
+                            let v: serde_json::Value =
+                                serde_json::from_str(&settings).unwrap_or_default();
+                            let font_size = v["font_size"]
+                                .as_i64()
+                                .map(|n| n.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+                                .unwrap_or(16);
+                            let color = v["color"].as_str().unwrap_or_default().to_string();
+                            self.oss.current = Some(OssFileEd {
+                                key,
+                                content,
+                                font_size,
+                                color,
+                                dirty: false,
+                                last_edit: Instant::now(),
+                                saving: false,
+                            });
+                        }
+                        Err(e) => self.oss.status = e,
+                    }
+                }
+                Msg::OssPut(res) => match res {
+                    Ok(key) => {
+                        if let Some(f) = &mut self.oss.current {
+                            if f.key == key {
+                                f.saving = false;
+                            }
+                        }
+                        self.oss.status = "已保存".into();
+                        self.oss_list(self.oss.prefix.clone());
+                    }
+                    Err(e) => {
+                        if let Some(f) = &mut self.oss.current {
+                            f.saving = false;
+                            f.dirty = true;
+                        }
+                        self.oss.status = format!("保存失败:{e}");
+                    }
+                },
+                Msg::OssDelete(res) => {
+                    self.oss.confirm_delete = None;
+                    match res {
+                        Ok(()) => {
+                            self.oss.status = "已删除".into();
+                            self.oss_list(self.oss.prefix.clone());
+                        }
+                        Err(e) => self.oss.status = format!("删除失败:{e}"),
+                    }
+                }
             }
         }
     }
@@ -506,18 +770,26 @@ impl UrlnoteApp {
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("📝 urlnote");
-                if ui.button("＋ 新建").clicked() {
-                    self.new_note();
+                if ui.selectable_label(self.view == View::Notes, "便签").clicked() {
+                    self.view = View::Notes;
                 }
-                ui.add_space(8.0);
-                let se = TextEdit::singleline(&mut self.search)
-                    .hint_text("全文搜索…")
-                    .desired_width(180.0);
-                if ui.add(se).changed() {
-                    self.search_dirty_at = Some(Instant::now());
+                if ui.selectable_label(self.view == View::Oss, "文件库").clicked() {
+                    self.enter_oss();
                 }
-                if self.searching || self.notes_loading {
-                    ui.spinner();
+                if self.view == View::Notes {
+                    if ui.button("＋ 新建").clicked() {
+                        self.new_note();
+                    }
+                    ui.add_space(8.0);
+                    let se = TextEdit::singleline(&mut self.search)
+                        .hint_text("全文搜索…")
+                        .desired_width(180.0);
+                    if ui.add(se).changed() {
+                        self.search_dirty_at = Some(Instant::now());
+                    }
+                    if self.searching || self.notes_loading {
+                        ui.spinner();
+                    }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("退出登录").clicked() {
@@ -527,12 +799,17 @@ impl UrlnoteApp {
                             Msg::Logout
                         });
                     }
-                    if !self.status.is_empty() {
+                    if self.view == View::Notes && !self.status.is_empty() {
                         ui.label(RichText::new(&self.status).weak().size(12.0));
                     }
                 });
             });
         });
+
+        if self.view == View::Oss {
+            self.ui_oss(ctx);
+            return;
+        }
 
         egui::SidePanel::left("notes").min_width(220.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -643,6 +920,225 @@ impl UrlnoteApp {
                 }
             }
         });
+    }
+
+    fn ui_oss(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("oss-bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                // 面包屑
+                if ui.button("📁 根目录").clicked() {
+                    self.oss.close_dialogs();
+                    self.oss_list(String::new());
+                }
+                let prefix = self.oss.prefix.clone();
+                let parts: Vec<String> = prefix
+                    .trim_end_matches('/')
+                    .split('/')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                let mut acc = String::new();
+                for p in &parts {
+                    acc.push_str(p);
+                    acc.push('/');
+                    let target = acc.clone();
+                    ui.label("/");
+                    if ui.button(p).clicked() {
+                        self.oss.close_dialogs();
+                        self.oss_list(target);
+                    }
+                }
+                ui.separator();
+                if ui.button("＋ 文件").clicked() {
+                    self.oss.new_file = true;
+                    self.oss.new_folder = false;
+                    self.oss.input.clear();
+                }
+                if ui.button("＋ 文件夹").clicked() {
+                    self.oss.new_folder = true;
+                    self.oss.new_file = false;
+                    self.oss.input.clear();
+                }
+                if ui.button("刷新").clicked() {
+                    self.oss_list(self.oss.prefix.clone());
+                }
+                if self.oss.loading {
+                    ui.spinner();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(f) = &self.oss.current {
+                        if f.dirty {
+                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), "● 未保存");
+                        } else if f.saving {
+                            ui.weak("保存中…");
+                        }
+                        ui.label(RichText::new(f.key.rsplit('/').next().unwrap_or(&f.key)).size(13.0));
+                        if ui.button("✕ 关闭文件").clicked() {
+                            self.oss_save_now();
+                            self.oss.current = None;
+                        }
+                    }
+                    if !self.oss.status.is_empty() {
+                        ui.label(RichText::new(&self.oss.status).weak().size(12.0));
+                    }
+                });
+            });
+        });
+
+        egui::SidePanel::left("oss-list").min_width(240.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                if self.oss.creds.is_none() {
+                    if self.oss.creds_err.is_empty() {
+                        ui.weak("加载对象存储配置…");
+                    } else {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(220, 80, 80),
+                            format!("对象存储未配置:{}", self.oss.creds_err),
+                        );
+                        ui.weak("请在环境变量或 ~/.urlnote/oss.conf 中设置:");
+                        ui.monospace("OSS_ENDPOINT=objectstorageapi.bja.sealos.run\nOSS_AK=…\nOSS_SK=…\nOSS_BUCKET=…");
+                    }
+                    return;
+                }
+                let dirs = self.oss.dirs.clone();
+                for d in &dirs {
+                    let name = d.trim_start_matches(&self.oss.prefix).to_string();
+                    ui.horizontal(|ui| {
+                        if ui.button(format!("📁 {name}")).clicked() {
+                            self.oss.close_dialogs();
+                            self.oss_list(d.clone());
+                        }
+                        if ui.small_button("✕").on_hover_text("删除文件夹(含全部内容)").clicked() {
+                            self.oss.confirm_delete = Some((name.clone(), true));
+                        }
+                    });
+                }
+                let files = self.oss.files.clone();
+                for f in &files {
+                    if f.name.ends_with(".settings.json") {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        let label = if f.name.ends_with(".md") {
+                            format!("📄 {}", f.name)
+                        } else {
+                            format!("📎 {}", f.name)
+                        };
+                        if ui.button(label).on_hover_text(format!("{} 字节 · {}", f.size, f.modified)).clicked() {
+                            if f.name.ends_with(".md") || f.name.ends_with(".txt") || f.name.ends_with(".markdown") {
+                                self.oss.close_dialogs();
+                                self.oss_open(f.key.clone());
+                            } else {
+                                self.oss.status = "该类型暂不支持在线编辑(图片/Office 等后续版本)".into();
+                            }
+                        }
+                        if ui.small_button("✕").on_hover_text("删除").clicked() {
+                            self.oss.confirm_delete = Some((f.name.clone(), false));
+                        }
+                    });
+                }
+                if dirs.is_empty() && files.is_empty() && !self.oss.loading {
+                    ui.weak("空目录,点上方「＋ 文件 / ＋ 文件夹」新建");
+                }
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let Some(f) = &mut self.oss.current else {
+                ui.weak("左侧选择 md 文件,或新建");
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("字号").size(12.0).weak());
+                if ui.button("A−").clicked() {
+                    f.font_size = (f.font_size - 1).max(MIN_FONT_SIZE);
+                    f.mark_edit();
+                }
+                if ui.button("A+").clicked() {
+                    f.font_size = (f.font_size + 1).min(MAX_FONT_SIZE);
+                    f.mark_edit();
+                }
+                ui.weak(format!("({} 键入自动保存)", f.font_size));
+            });
+            ui.separator();
+            let size = f.font_size as f32;
+            let mut content = std::mem::take(&mut f.content);
+            let resp = TextEdit::multiline(&mut content)
+                .font(FontId::monospace(size))
+                .desired_width(f32::INFINITY)
+                .desired_rows(30)
+                .show(ui);
+            f.content = content;
+            if resp.response.changed() {
+                f.mark_edit();
+            }
+        });
+
+        // 对话框:新建文件 / 文件夹
+        if self.oss.new_file || self.oss.new_folder {
+            let is_file = self.oss.new_file;
+            let mut open = true;
+            egui::Window::new(if is_file { "新建文件" } else { "新建文件夹" })
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("名称");
+                        let te = TextEdit::singleline(&mut self.oss.input)
+                            .desired_width(240.0)
+                            .hint_text(if is_file { "如 笔记.md" } else { "如 资料" });
+                        let r = ui.add(te);
+                        if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                            self.oss_create(!is_file);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("确定").clicked() {
+                            self.oss_create(!is_file);
+                        }
+                        if ui.button("取消").clicked() {
+                            self.oss.new_file = false;
+                            self.oss.new_folder = false;
+                        }
+                    });
+                });
+            if !open {
+                self.oss.new_file = false;
+                self.oss.new_folder = false;
+            }
+        }
+
+        // 对话框:删除确认
+        if let Some((name, is_dir)) = self.oss.confirm_delete.clone() {
+            let mut open = true;
+            egui::Window::new("确认删除")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.label(if is_dir {
+                        format!("删除文件夹 {name}/ 及其全部内容?")
+                    } else {
+                        format!("删除 {name}?")
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("删除").clicked() {
+                            self.oss_delete(name.clone(), is_dir);
+                        }
+                        if ui.button("取消").clicked() {
+                            self.oss.confirm_delete = None;
+                        }
+                    });
+                });
+            if !open {
+                self.oss.confirm_delete = None;
+            }
+        }
     }
 
     fn ui_dict(&mut self, ui: &mut egui::Ui) {
@@ -798,8 +1294,21 @@ impl eframe::App for UrlnoteApp {
                         self.do_dict(word);
                     }
                 }
+                // 文件库自动保存
+                if self.view == View::Oss {
+                    let oss_due = self
+                        .oss
+                        .current
+                        .as_ref()
+                        .map(|f| f.dirty && !f.saving && f.last_edit.elapsed() > AUTOSAVE_DELAY)
+                        .unwrap_or(false);
+                    if oss_due {
+                        self.oss_save_now();
+                    }
+                }
                 // 有计时器在跑时维持帧节奏(否则 egui 空闲不重绘)
                 if self.current.as_ref().map(|e| e.dirty).unwrap_or(false)
+                    || self.oss.current.as_ref().map(|f| f.dirty).unwrap_or(false)
                     || self.search_dirty_at.is_some()
                 {
                     ctx.request_repaint_after(Duration::from_millis(150));

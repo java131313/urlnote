@@ -5843,10 +5843,13 @@ name = "urlnote-desktop"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "hmac 0.12.1",
+ "quick-xml 0.37.5",
  "rand 0.8.8",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "shared",
 ]
 
