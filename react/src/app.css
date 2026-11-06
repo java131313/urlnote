@@ -341,3 +341,8 @@ a.tool { text-decoration: none; display: inline-block; }
 
 /* Collabora 在线编辑 iframe(文件库 Office 文档) */
 .office-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+
+/* SVG 专用编辑页:左源码右实时预览(参考 svgview 的 svg-editor) */
+.svg-pane { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 8px 16px 16px; }
+.svg-src { flex: 1; min-width: 0; resize: none; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.5; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 6px; padding: 8px; background: var(--oss-bg, #fff); color: inherit; }
+.svg-view { flex: 1; min-width: 0; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 6px; background: #fff; }

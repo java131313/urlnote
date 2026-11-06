@@ -92,18 +92,19 @@ function sanitizeName(raw: string): string | null {
 
 const OFFICE_EXTS = ['docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp'];
 
-function fileKind(name: string): 'image' | 'pdf' | 'media' | 'office' | 'text' {
+function fileKind(name: string): 'image' | 'pdf' | 'media' | 'office' | 'svg' | 'text' {
   const ext = name.split('.').pop()?.toLowerCase() || '';
   if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif'].includes(ext)) return 'image';
   if (ext === 'pdf') return 'pdf';
   if (ext === 'mp3' || ext === 'mp4') return 'media';
   if (OFFICE_EXTS.includes(ext)) return 'office';
+  if (ext === 'svg') return 'svg';
   return 'text';
 }
 
 function fileIcon(name: string): string {
   const kind = fileKind(name);
-  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : kind === 'media' ? (isAudioName(name) ? '🎵' : '🎬') : kind === 'office' ? '📘' : '📄';
+  return kind === 'image' ? '🖼️' : kind === 'pdf' ? '📕' : kind === 'media' ? (isAudioName(name) ? '🎵' : '🎬') : kind === 'office' ? '📘' : kind === 'svg' ? '✏️' : '📄';
 }
 
 function isAudioName(name: string): boolean {
@@ -133,6 +134,8 @@ interface PageState {
   previewUrl: string | null;
   media: { key: string; name: string } | null;
   office: { key: string; name: string; ds: string; cfg: OfficeEditorCfg['config']; elId: string } | null;
+  /// SVG 专用页:源码 + 实时预览,只针对 .svg(参考 svgview 的 svg-editor)
+  svg: { key: string; name: string; text: string; savedText: string; loading: boolean } | null;
 }
 
 export function OssRoute() {
@@ -194,6 +197,7 @@ function OssPage() {
     previewUrl: null,
     media: null,
     office: null,
+    svg: null,
   });
   const [, setVer] = useState(0);
   const bump = useCallback(() => setVer((v) => v + 1), []);
@@ -568,10 +572,56 @@ function OssPage() {
   const openEntry = (key: string, name: string) => {
     const kind = fileKind(name);
     if (kind === 'image') previewImage(key, name);
+    else if (kind === 'svg') openSvg(key, name);
     else if (kind === 'pdf') openPdfAsMd(key, name);
     else if (kind === 'media') openMedia(key, name);
     else if (kind === 'office') openOffice(key, name);
     else openFile(key, name);
+  };
+
+  const openSvg = (key: string, name: string) => {
+    st.current.status = `打开 ${name}…`;
+    st.current.media = null;
+    st.current.office = null;
+    st.current.svg = { key, name, text: '', savedText: '', loading: true };
+    bump();
+    getObject(key)
+      .then((text) => {
+        if (st.current.svg?.key !== key) return;
+        st.current.svg = { key, name, text, savedText: text, loading: false };
+        st.current.status = '';
+        bump();
+      })
+      .catch((e) => {
+        if (st.current.svg?.key === key) st.current.svg = null;
+        st.current.status = errMsg(e);
+        bump();
+      });
+  };
+
+  const saveSvg = () => {
+    const v = st.current.svg;
+    if (!v || v.loading || v.text === v.savedText) return;
+    st.current.status = '保存 SVG…';
+    bump();
+    putObject(v.key, v.text)
+      .then(() => {
+        if (st.current.svg?.key !== v.key) return;
+        st.current.svg.savedText = v.text;
+        st.current.status = '已保存';
+        bump();
+        refreshTree();
+      })
+      .catch((e) => {
+        st.current.status = errMsg(e);
+        bump();
+      });
+  };
+
+  const closeSvg = () => {
+    st.current.svg = null;
+    bump();
+    refreshTree(); // 保存后文件大小/时间变了
   };
 
   const openOffice = (key: string, name: string) => {
@@ -582,6 +632,7 @@ function OssPage() {
       .then((d) => {
         st.current.office = { key, name, ds: d.ds, cfg: d.config, elId: `ods-${Date.now()}` };
         st.current.media = null;
+        st.current.svg = null;
         st.current.status = '';
         suggest.close();
         bump();
@@ -602,6 +653,7 @@ function OssPage() {
     st.current.status = '';
     st.current.media = { key, name };
     st.current.office = null;
+    st.current.svg = null;
     suggest.close();
     bump();
   };
@@ -856,6 +908,49 @@ function OssPage() {
               </button>
             </div>
           )}
+          {s.svg && (
+            <div className="oss-filebar">
+              <span className="media-title">{s.svg.name}</span>
+              <span className="oss-spacer" />
+              <span className="oss-status">SVG 源码 + 实时预览</span>
+              <button
+                type="button"
+                className="tool"
+                disabled={s.svg.loading || s.svg.text === s.svg.savedText}
+                onClick={saveSvg}
+                title="保存回对象存储"
+              >
+                💾 保存
+              </button>
+              <button type="button" className="tool" onClick={closeSvg} title="关闭,返回文件库">
+                ✕ 返回
+              </button>
+            </div>
+          )}
+          {s.svg &&
+            (s.svg.loading ? (
+              <div className="oss-empty">载入 {s.svg.name}…</div>
+            ) : (
+              <div className="svg-pane">
+                <textarea
+                  className="svg-src"
+                  spellCheck={false}
+                  value={s.svg.text}
+                  onChange={(e) => {
+                    const v = st.current.svg;
+                    if (!v) return;
+                    v.text = e.target.value;
+                    bump();
+                  }}
+                />
+                <iframe
+                  className="svg-view"
+                  sandbox=""
+                  srcDoc={`<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;height:100%;display:flex;align-items:center;justify-content:center;background:#fff}svg{max-width:100%;max-height:100vh}</style></head><body>${s.svg.text}</body></html>`}
+                  title="svg-preview"
+                />
+              </div>
+            ))}
           {s.office && (
             <div className="oss-filebar">
               <span className="media-title">{s.office.name}</span>
@@ -876,7 +971,7 @@ function OssPage() {
               ))}
           </div>
           {/* 编辑器整体隐藏而非卸载:Vditor 实例要存活,返回编辑时状态不丢 */}
-          <div style={{ display: s.media || s.office ? 'none' : 'contents' }}>
+          <div style={{ display: s.media || s.office || s.svg ? 'none' : 'contents' }}>
           <div className="oss-filebar">
             {s.currentName}
             {s.dirty && s.current && <span className="oss-dirty">● 未保存</span>}
