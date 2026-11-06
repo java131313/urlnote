@@ -15,8 +15,35 @@ use std::time::{Duration, Instant};
 
 mod s3;
 
-/// 后端地址(与 Web 前端 VITE_API_BASE 一致)。
-const API: &str = "https://yyuqmndqpnjr.sealosbja.site";
+/// 默认后端(与 Web 前端 VITE_API_BASE 一致);登录页可改,
+/// 持久化到 ~/.urlnote/server.conf,便于指向本地 cargo run 起的 server。
+const DEFAULT_API: &str = "https://yyuqmndqpnjr.sealosbja.site";
+
+fn normalize_base(s: &str) -> String {
+    s.trim().trim_end_matches('/').to_string()
+}
+
+fn load_api_base() -> String {
+    let conf = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join(".urlnote/server.conf");
+    std::fs::read_to_string(&conf)
+        .ok()
+        .map(|s| normalize_base(&s))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_API.to_string())
+}
+
+fn save_api_base(base: &str) {
+    let dir = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default()
+        .join(".urlnote");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join("server.conf"), base);
+    }
+}
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(800);
 const SEARCH_DELAY: Duration = Duration::from_millis(300);
@@ -213,6 +240,8 @@ struct EditorCtl {
     /// 当前编辑器承载的文档快照(/editor/doc 由此应答;POST 写回)。
     doc: Arc<Mutex<EditorDoc>>,
     open_id: String,
+    /// 后端地址(登录改服务器时同步;桥的图片上传用)。
+    api_base: Arc<Mutex<String>>,
 }
 
 #[derive(Clone)]
@@ -229,6 +258,7 @@ impl EditorCtl {
             token: String::new(),
             doc: Arc::new(Mutex::new(EditorDoc { id: String::new(), title: String::new(), content: String::new() })),
             open_id: String::new(),
+            api_base: Arc::new(Mutex::new(load_api_base())),
         }
     }
 }
@@ -249,9 +279,10 @@ impl EditorCtl {
 
         let token = self.token.clone();
         let doc = self.doc.clone();
+        let api_base = self.api_base.clone();
         std::thread::spawn(move || {
             for mut req in server.incoming_requests() {
-                let resp = bridge_handle(&mut req, &token, &doc, &tx, &client);
+                let resp = bridge_handle(&mut req, &token, &doc, &tx, &client, &api_base);
                 let _ = req.respond(resp);
                 ctx.request_repaint();
             }
@@ -266,6 +297,7 @@ fn bridge_handle(
     doc: &Arc<Mutex<EditorDoc>>,
     tx: &Sender<Msg>,
     client: &reqwest::blocking::Client,
+    api_base: &Arc<Mutex<String>>,
 ) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
     use tiny_http::{Header, Response};
     let ok = |body: String, ctype: &str| {
@@ -349,8 +381,9 @@ fn bridge_handle(
                 .find(|h| h.field.equiv("Content-Type"))
                 .and_then(|h| h.value.as_str().parse::<String>().ok())
                 .unwrap_or_default();
+            let base = api_base.lock().map(|b| b.clone()).unwrap_or_default();
             let result = parse_multipart(&ct, &body)
-                .and_then(|(fname, bytes)| upload_to_backend(client, &fname, &bytes));
+                .and_then(|(fname, bytes)| upload_to_backend(client, &base, &fname, &bytes));
             let succ = match result {
                 Ok(url) => serde_json::json!({ fname_of(&url): url }),
                 Err(_) => serde_json::json!({}),
@@ -423,14 +456,19 @@ fn parse_multipart(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>),
 }
 
 /// 转发后端 /api/upload(带主程序的会话 cookie),返回图片 URL。
-fn upload_to_backend(client: &reqwest::blocking::Client, fname: &str, bytes: &[u8]) -> Result<String, String> {
+fn upload_to_backend(
+    client: &reqwest::blocking::Client,
+    base: &str,
+    fname: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
     let part = reqwest::blocking::multipart::Part::bytes(bytes.to_vec())
         .file_name(fname.to_string())
         .mime_str("application/octet-stream")
         .map_err(|e| e.to_string())?;
     let form = reqwest::blocking::multipart::Form::new().part("file[]", part);
     let resp = client
-        .post(format!("{API}/api/upload"))
+        .post(format!("{base}/api/upload"))
         .multipart(form)
         .send()
         .map_err(|e| e.to_string())?;
@@ -504,6 +542,10 @@ struct UrlnoteApp {
     view: View,
     oss: OssState,
     editor: EditorCtl,
+    /// 当前后端地址(登录页可改,成功登录后持久化)。
+    api_base: String,
+    /// 登录页的服务器地址输入框。
+    server: String,
 }
 
 impl UrlnoteApp {
@@ -538,11 +580,15 @@ impl UrlnoteApp {
             view: View::Notes,
             oss: OssState::new(),
             editor,
+            api_base: load_api_base(),
+            server: String::new(),
         };
+        app.server = app.api_base.clone();
         // 启动时探测既有会话(cookie jar 为空,必然未登录,仅校验连通性)。
         let tx0 = app.rx_tx();
-        go(&app.client, ctx, &tx0, |c| {
-            let r = c.get(format!("{API}/api/whoami")).send();
+        let base = app.api_base.clone();
+        go(&app.client, ctx, &tx0, move |c| {
+            let r = c.get(format!("{base}/api/whoami")).send();
             Msg::Whoami(match r {
                 Ok(resp) => {
                     if resp.status().is_success() {
@@ -565,8 +611,9 @@ impl UrlnoteApp {
         self.screen = Screen::Main;
         self.refresh_notes();
         let tx = self.rx_tx();
-        go(&self.client, &self.ctx, &tx, |c| {
-            let r = c.get(format!("{API}/api/dict/langs")).send();
+        let base = self.api_base.clone();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let r = c.get(format!("{base}/api/dict/langs")).send();
             Msg::Langs(match r {
                 Ok(resp) if resp.status().is_success() => {
                     resp.json::<DictLangList>().map(|l| l.langs).unwrap_or_default()
@@ -584,8 +631,9 @@ impl UrlnoteApp {
     fn refresh_notes(&mut self) {
         self.notes_loading = true;
         let tx = self.rx_tx();
-        go(&self.client, &self.ctx, &tx, |c| {
-            let r = c.get(format!("{API}/api/notes")).send();
+        let base = self.api_base.clone();
+        go(&self.client, &self.ctx, &tx, move |c| {
+            let r = c.get(format!("{base}/api/notes")).send();
             Msg::Notes(match r {
                 Ok(resp) if resp.status().is_success() => {
                     resp.json::<NoteList>().map(|l| l.notes).map_err(err)
@@ -601,8 +649,9 @@ impl UrlnoteApp {
         let id = id.to_string();
         self.status = format!("打开 {id}…");
         let tx = self.rx_tx();
+        let base = self.api_base.clone();
         go(&self.client, &self.ctx, &tx, move |c| {
-            let r = c.get(format!("{API}/api/note/{id}")).send();
+            let r = c.get(format!("{base}/api/note/{id}")).send();
             Msg::NoteLoaded(match r {
                 Ok(resp) if resp.status().is_success() => resp.json::<Note>().map_err(err),
                 Ok(resp) => Err(format!("HTTP {}", resp.status())),
@@ -629,9 +678,10 @@ impl UrlnoteApp {
         let id = ed.note.id.clone();
         let body = ed.save_req();
         let tx = self.rx_tx();
+        let base = self.api_base.clone();
         go(&self.client, &self.ctx, &tx, move |c| {
             let r = c
-                .put(format!("{API}/api/note/{id}"))
+                .put(format!("{base}/api/note/{id}"))
                 .json(&body)
                 .send();
             Msg::Saved {
@@ -657,6 +707,15 @@ impl UrlnoteApp {
         if self.busy {
             return;
         }
+        // 登录页可改后端地址(本地 cargo run 的 server 用 http://localhost:8080)
+        self.api_base = normalize_base(&self.server);
+        if self.api_base.is_empty() {
+            self.api_base = DEFAULT_API.to_string();
+            self.server = self.api_base.clone();
+        }
+        if let Ok(mut b) = self.editor.api_base.lock() {
+            *b = self.api_base.clone();
+        }
         self.busy = true;
         self.login_err.clear();
         let body = LoginRequest {
@@ -664,8 +723,9 @@ impl UrlnoteApp {
             password: self.password.clone(),
         };
         let tx = self.rx_tx();
+        let base = self.api_base.clone();
         go(&self.client, &self.ctx, &tx, move |c| {
-            let r = c.post(format!("{API}/api/login")).json(&body).send();
+            let r = c.post(format!("{base}/api/login")).json(&body).send();
             Msg::Login(match r {
                 Ok(resp) if resp.status().is_success() => {
                     let _ = resp.json::<OkResponse>();
@@ -682,9 +742,10 @@ impl UrlnoteApp {
         let q = self.search.trim().to_string();
         self.searching = !q.is_empty();
         let tx = self.rx_tx();
+        let base = self.api_base.clone();
         go(&self.client, &self.ctx, &tx, move |c| {
             let r = c
-                .get(format!("{API}/api/search?q={}", urlencode(&q)))
+                .get(format!("{base}/api/search?q={}", urlencode(&q)))
                 .send();
             Msg::Search(match r {
                 Ok(resp) if resp.status().is_success() => {
@@ -708,10 +769,11 @@ impl UrlnoteApp {
         self.dict.last_req = Instant::now();
         let lang = self.dict.lang.clone();
         let tx = self.rx_tx();
+        let base = self.api_base.clone();
         go(&self.client, &self.ctx, &tx, move |c| {
             let r = c
                 .get(format!(
-                    "{API}/api/dict/lookup?q={}&lang={}",
+                    "{base}/api/dict/lookup?q={}&lang={}",
                     urlencode(&word),
                     urlencode(&lang)
                 ))
@@ -866,7 +928,7 @@ impl UrlnoteApp {
         self.spawn_editor(&id, &title);
     }
 
-    fn spawn_editor(&mut self, id: &str, title: &str) {
+    fn spawn_editor(&mut self, id: &str, _title: &str) {
         // 浏览器承载编辑器:页面与桥同源于 127.0.0.1,无跨域/ATS/cookie 问题。
         // (wry 内嵌窗口在 macOS 上对 http://127.0.0.1 白板,疑被 ATS 拦截,弃用。)
         self.close_editor();
@@ -924,6 +986,7 @@ impl UrlnoteApp {
                     self.busy = false;
                     match res {
                         Ok(()) => {
+                            save_api_base(&self.api_base);
                             self.password.clear();
                             self.enter_main();
                         }
@@ -1094,6 +1157,10 @@ impl UrlnoteApp {
                 ui.heading(RichText::new("📝 urlnote").size(28.0));
                 ui.add_space(16.0);
                 ui.set_max_width(max_w);
+                ui.label("服务器地址");
+                ui.add(TextEdit::singleline(&mut self.server).desired_width(max_w))
+                    .on_hover_text("默认线上后端;本地调试填 http://localhost:8080");
+                ui.add_space(6.0);
                 ui.label("用户名");
                 ui.add(TextEdit::singleline(&mut self.username).desired_width(max_w));
                 ui.add_space(6.0);
@@ -1147,8 +1214,9 @@ impl UrlnoteApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("退出登录").clicked() {
                         let tx = self.rx_tx();
-                        go(&self.client, &self.ctx, &tx, |c| {
-                            let _ = c.post(format!("{API}/api/logout")).send();
+                        let base = self.api_base.clone();
+                        go(&self.client, &self.ctx, &tx, move |c| {
+                            let _ = c.post(format!("{base}/api/logout")).send();
                             Msg::Logout
                         });
                     }
