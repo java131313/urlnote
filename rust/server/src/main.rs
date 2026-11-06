@@ -98,11 +98,18 @@ fn api_router(st: AppState) -> Router {
                 ]),
         )
     } else {
-        let origins: Vec<axum::http::HeaderValue> = st
+        let mut origins: Vec<axum::http::HeaderValue> = st
             .cors_origins
             .iter()
             .filter_map(|o| o.parse().ok())
             .collect();
+        // 桌面版(Tauri webview)固定来源,始终放行;携带凭据的登录请求
+        // 要求显式来源,不能用通配。
+        for fixed in ["tauri://localhost", "http://tauri.localhost"] {
+            if let Ok(v) = fixed.parse() {
+                origins.push(v);
+            }
+        }
         // 注意:allow_credentials(true) 时 tower-http 禁止 Any 通配
         // (浏览器规范:携带凭据时不允许 *),必须给出显式清单
         Some(

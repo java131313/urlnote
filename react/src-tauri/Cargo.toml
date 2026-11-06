@@ -1,0 +1,20 @@
+[package]
+name = "urlnote-desktop"
+version = "0.1.0"
+description = "urlnote macOS 桌面版(Tauri 壳 + react 前端,功能与 Web 版一致)"
+edition = "2021"
+license = "MIT"
+
+[lib]
+# Tauri 约定:lib 供移动端复用,桌面 main.rs 调 lib::run()
+name = "urlnote_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

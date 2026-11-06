@@ -1,0 +1,5 @@
+# Tauri 生成物
+gen/
+target/
+# 图标源图不入库(可由 scripts/make-icon.mjs 重新生成)
+icons-src.png
