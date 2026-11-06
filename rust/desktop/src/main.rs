@@ -809,6 +809,32 @@ impl eframe::App for UrlnoteApp {
     }
 }
 
+/// 加载中文字体:egui 默认字体不含 CJK,从 macOS 系统字体挑一个可用的
+/// (按解析可靠性排序;.ttc 集合部分解析器不支持,放后面)。
+fn setup_fonts(ctx: &egui::Context) {
+    const CANDIDATES: [&str; 5] = [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ];
+    for path in CANDIDATES {
+        if let Ok(bytes) = std::fs::read(path) {
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+            for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                // 追加为回退字体:拉丁字符仍用 egui 内置字体,CJK 落到 cjk
+                fonts.families.entry(fam).or_default().push("cjk".to_owned());
+            }
+            ctx.set_fonts(fonts);
+            eprintln!("CJK font loaded: {path}");
+            return;
+        }
+    }
+    eprintln!("warn: no CJK system font found, Chinese will render as boxes");
+}
+
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -821,6 +847,7 @@ fn main() -> eframe::Result<()> {
         "urlnote",
         options,
         Box::new(|cc| {
+            setup_fonts(&cc.egui_ctx);
             let ctx = cc.egui_ctx.clone();
             Ok(Box::new(UrlnoteApp::new(&ctx)))
         }),
