@@ -78,10 +78,12 @@ desktop: desktop-stage
 ## 编译并安装到 /Applications/urlnote-native.app(含编辑器子进程与 Vditor 资源)
 desktop-install: desktop-stage
 	cd rust && cargo build --release -p urlnote-desktop
-	mkdir -p /Applications/urlnote-native.app/Contents/MacOS /Applications/urlnote-native.app/Contents/Resources
-	cp rust/target/release/urlnote-desktop /Applications/urlnote-native.app/Contents/MacOS/
-	rm -rf /Applications/urlnote-native.app/Contents/Resources/assets
-	cp -R rust/desktop/assets /Applications/urlnote-native.app/Contents/Resources/assets
-	# 手工 bundle 的二进制需 ad-hoc 重签,否则被 taskgated 以 CODESIGNING 杀掉(Killed: 9)
-	codesign --force --sign - /Applications/urlnote-native.app/Contents/MacOS/urlnote-desktop
-	codesign --force --sign - /Applications/urlnote-native.app
+	mkdir -p /Applications/urlnote.app/Contents/MacOS /Applications/urlnote.app/Contents/Resources
+	cp rust/target/release/urlnote-desktop /Applications/urlnote.app/Contents/MacOS/
+	rm -rf /Applications/urlnote.app/Contents/Resources/assets
+	cp -R rust/desktop/assets /Applications/urlnote.app/Contents/Resources/assets
+	# 手工 bundle 必须有 Info.plist,且二进制需 ad-hoc 重签,否则被
+	# taskgated 以 CODESIGNING 杀掉(Killed: 9)
+	printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' '<plist version="1.0"><dict>' '<key>CFBundleExecutable</key><string>urlnote-desktop</string>' '<key>CFBundleIdentifier</key><string>io.github.java131313.urlnote</string>' '<key>CFBundleName</key><string>urlnote</string>' '<key>CFBundlePackageType</key><string>APPL</string>' '<key>LSMinimumSystemVersion</key><string>12.0</string>' '<key>CFBundleShortVersionString</key><string>0.1.0</string>' '</dict></plist>' > /Applications/urlnote.app/Contents/Info.plist
+	codesign --force --sign - /Applications/urlnote.app/Contents/MacOS/urlnote-desktop
+	codesign --force --sign - /Applications/urlnote.app
