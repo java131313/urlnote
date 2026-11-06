@@ -8,6 +8,9 @@
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // webview 对 S3 的直连在 macOS WKWebView 下被拦(Load failed),
+        // S3 请求改走 Rust 侧 reqwest(见前端 oss/s3.ts 的 nativeFetch)。
+        .plugin(tauri_plugin_http::init())
         .run(tauri::generate_context!())
         .expect("error while running urlnote desktop");
 }

@@ -7,6 +7,22 @@ import type { OssEntry } from './tree';
 const creds = { ak: OSS_AK, sk: OSS_SK, region: OSS_REGION, endpoint: OSS_ENDPOINT };
 const utf8 = new TextEncoder();
 
+/// Tauri 桌面端:webview(WKWebView)对对象存储的跨域直连会被拦
+/// (TypeError: Load failed),改走 Rust 侧 reqwest(tauri-plugin-http);
+/// Web 端保持浏览器原生 fetch。
+let tauriFetch: typeof fetch | null | undefined;
+async function nativeFetch(input: string, init?: RequestInit): Promise<Response> {
+  if (tauriFetch === undefined && (window as unknown as { __TAURI__?: unknown }).__TAURI__) {
+    try {
+      tauriFetch = (await import('@tauri-apps/plugin-http')).fetch as unknown as typeof fetch;
+    } catch {
+      tauriFetch = null;
+    }
+  }
+  if (tauriFetch) return tauriFetch(input, init);
+  return fetch(input, init);
+}
+
 function signedHeaders(method: string, path: string, query: [string, string][], payload: Uint8Array) {
   const sig = signRequestWith(creds, method, path, query, payload, Date.now());
   return {
@@ -24,7 +40,7 @@ function objectUrl(key: string): { path: string; url: string } {
 async function fetchWithSig(method: string, key: string, payload: Uint8Array<ArrayBuffer>): Promise<Response> {
   const { path, url } = objectUrl(key);
   try {
-    return await fetch(url, {
+    return await nativeFetch(url, {
       method,
       headers: signedHeaders(method, path, [], payload),
       body: payload.length || method === 'PUT' ? payload : undefined,
@@ -60,7 +76,7 @@ export async function objectExists(key: string): Promise<boolean> {
   const { path, url } = objectUrl(key);
   let r: Response;
   try {
-    r = await fetch(url, { method: 'HEAD', headers: signedHeaders('HEAD', path, [], new Uint8Array(0)) });
+    r = await nativeFetch(url, { method: 'HEAD', headers: signedHeaders('HEAD', path, [], new Uint8Array(0)) });
   } catch {
     return false;
   }
@@ -87,7 +103,7 @@ export async function listAllEntriesUnder(prefix: string): Promise<OssEntry[]> {
     let r: Response;
     const url = `https://${OSS_ENDPOINT}${path}?${canonicalQuery(query)}`;
     try {
-      r = await fetch(url, { headers: signedHeaders('GET', path, query, new Uint8Array(0)) });
+      r = await nativeFetch(url, { headers: signedHeaders('GET', path, query, new Uint8Array(0)) });
     } catch (e) {
       throw new Error(`网络错误: ${e}`);
     }
