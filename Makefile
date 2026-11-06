@@ -64,3 +64,14 @@ init-db-local:
 
 clean:
 	rm -rf build rust/target rust/worker/build rust/frontend/dist rust/frontend/node_modules rust/frontend/static/vditor rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs frontend/node_modules frontend/dist
+
+# ---- 原生桌面版(rust/desktop,eframe) ----
+## 运行:cargo 编译后直接启动(约 30s,增量秒级)
+desktop:
+	cd rust && cargo run --release -p urlnote-desktop
+
+## 编译并安装到 /Applications/urlnote-native.app(双击/启动台可开)
+desktop-install:
+	cd rust && cargo build --release -p urlnote-desktop
+	mkdir -p /Applications/urlnote-native.app/Contents/MacOS
+	cp rust/target/release/urlnote-desktop /Applications/urlnote-native.app/Contents/MacOS/
