@@ -40,7 +40,6 @@ enum Msg {
     OssDelete(Result<(), String>),
     // ---- Vditor 外部编辑器(loopback 桥) ----
     EditorPosted(String),
-    EditorExited,
 }
 
 /// 后台线程执行请求,完成后经 channel 回 UI 线程并触发重绘。
@@ -206,14 +205,13 @@ impl OssState {
     }
 }
 
-/// Vditor 编辑器子进程的桥状态:GET 快照 + 子进程。
+/// Vditor 编辑器的桥状态:GET 快照(浏览器承载页面,无子进程)。
 struct EditorCtl {
-    /// loopback 服务端口与令牌(随页面 URL 传给子进程)。
+    /// loopback 服务端口与令牌(随页面 URL 传给浏览器)。
     port: u16,
     token: String,
     /// 当前编辑器承载的文档快照(/editor/doc 由此应答;POST 写回)。
     doc: Arc<Mutex<EditorDoc>>,
-    child: Option<Arc<Mutex<std::process::Child>>>,
     open_id: String,
 }
 
@@ -230,7 +228,6 @@ impl EditorCtl {
             port: 0,
             token: String::new(),
             doc: Arc::new(Mutex::new(EditorDoc { id: String::new(), title: String::new(), content: String::new() })),
-            child: None,
             open_id: String::new(),
         }
     }
@@ -474,26 +471,6 @@ fn assets_dir() -> std::path::PathBuf {
         }
     }
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
-}
-
-/// 编辑器子进程二进制:与主程序同目录;开发期回退 target/{debug,release}。
-fn editor_exe() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap_or_default();
-    let dir = exe.parent().unwrap_or(std::path::Path::new("."));
-    let sib = dir.join("urlnote-editor");
-    if sib.exists() {
-        return sib;
-    }
-    for cand in [
-        dir.join("../Resources/urlnote-editor"),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/urlnote-editor"),
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/urlnote-editor"),
-    ] {
-        if cand.exists() {
-            return cand;
-        }
-    }
-    sib
 }
 
 struct UrlnoteApp {
@@ -885,51 +862,25 @@ impl UrlnoteApp {
     }
 
     fn spawn_editor(&mut self, id: &str, title: &str) {
+        // 浏览器承载编辑器:页面与桥同源于 127.0.0.1,无跨域/ATS/cookie 问题。
+        // (wry 内嵌窗口在 macOS 上对 http://127.0.0.1 白板,疑被 ATS 拦截,弃用。)
         self.close_editor();
-        let exe = editor_exe();
-        match std::process::Command::new(&exe)
-            .args([
-                "--port", &self.editor.port.to_string(),
-                "--token", &self.editor.token,
-                "--id", id,
-                "--title", title,
-            ])
-            .spawn()
-        {
-            Ok(child) => {
-                let shared = Arc::new(Mutex::new(child));
-                self.editor.child = Some(shared.clone());
+        let url = format!(
+            "http://127.0.0.1:{}/editor/page?id={}&token={}",
+            self.editor.port, id, self.editor.token
+        );
+        match std::process::Command::new("open").arg(&url).spawn() {
+            Ok(_) => {
                 self.editor.open_id = id.to_string();
-                let tx = self.rx_tx();
-                let ctx = self.ctx.clone();
-                let id_owned = id.to_string();
-                std::thread::spawn(move || {
-                    loop {
-                        std::thread::sleep(Duration::from_millis(300));
-                        let exited = shared
-                            .lock()
-                            .map(|mut c| c.try_wait().ok().flatten().is_some())
-                            .unwrap_or(true);
-                        if exited {
-                            let _ = tx.send(Msg::EditorExited);
-                            ctx.request_repaint();
-                            break;
-                        }
-                    }
-                    let _ = id_owned;
-                });
-                self.status = "Vditor 编辑器已打开".into();
+                eprintln!("vditor editor: {url}");
+                let _ = std::fs::write("/tmp/urlnote_editor_url", &url);
+                self.status = "已在浏览器中打开 Vditor 编辑器".into();
             }
-            Err(e) => self.status = format!("编辑器启动失败:{e}(缺 urlnote-editor 二进制?)"),
+            Err(e) => self.status = format!("打开浏览器失败:{e}"),
         }
     }
 
     fn close_editor(&mut self) {
-        if let Some(child) = self.editor.child.take() {
-            if let Ok(mut c) = child.lock() {
-                let _ = c.kill();
-            }
-        }
         self.editor.open_id.clear();
     }
 
@@ -1033,10 +984,6 @@ impl UrlnoteApp {
                             }
                         }
                     }
-                }
-                Msg::EditorExited => {
-                    self.editor.child = None;
-                    self.editor.open_id.clear();
                 }
                 Msg::OssCreds(res) => match res {
                     Ok(c) => {
@@ -1229,7 +1176,7 @@ impl UrlnoteApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // 编辑器状态行(先渲染,避免与下方 ed 借用冲突)
-            let editor_open = self.editor.child.is_some();
+            let editor_open = !self.editor.open_id.is_empty();
             let editor_for_this = editor_open
                 && self
                     .current
@@ -1241,9 +1188,9 @@ impl UrlnoteApp {
                 if editor_for_this {
                     ui.colored_label(
                         egui::Color32::from_rgb(60, 160, 90),
-                        "✅ Vditor 编辑中(独立窗口,自动回写)",
+                        "✅ Vditor 编辑中(浏览器窗口,自动回写)",
                     );
-                    if ui.button("✕ 关闭编辑器").clicked() {
+                    if ui.button("✕ 断开编辑器").on_hover_text("浏览器标签页请手动关闭").clicked() {
                         self.close_editor();
                     }
                 } else {

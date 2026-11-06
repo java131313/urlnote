@@ -80,9 +80,7 @@ desktop-install: desktop-stage
 	cd rust && cargo build --release -p urlnote-desktop
 	mkdir -p /Applications/urlnote-native.app/Contents/MacOS /Applications/urlnote-native.app/Contents/Resources
 	cp rust/target/release/urlnote-desktop /Applications/urlnote-native.app/Contents/MacOS/
-	cp rust/target/release/urlnote-editor /Applications/urlnote-native.app/Contents/MacOS/
 	cp -R rust/desktop/assets /Applications/urlnote-native.app/Contents/Resources/assets
 	# 手工 bundle 的二进制需 ad-hoc 重签,否则被 taskgated 以 CODESIGNING 杀掉(Killed: 9)
 	codesign --force --sign - /Applications/urlnote-native.app/Contents/MacOS/urlnote-desktop
-	codesign --force --sign - /Applications/urlnote-native.app/Contents/MacOS/urlnote-editor
 	codesign --force --sign - /Applications/urlnote-native.app
