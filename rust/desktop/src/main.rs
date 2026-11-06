@@ -889,6 +889,17 @@ impl UrlnoteApp {
         self.editor.open_id.clear();
     }
 
+    fn oss_open_vditor(&mut self) {
+        let Some(f) = &self.oss.current else { return };
+        let key = f.key.clone();
+        let title = key.rsplit('/').next().unwrap_or(&key).to_string();
+        {
+            let mut d = self.editor.doc.lock().unwrap();
+            *d = EditorDoc { id: key.clone(), title: title.clone(), content: f.content.clone() };
+        }
+        self.spawn_editor(&key, &title);
+    }
+
     /// 用选中的词典词替换光标前的锚词。
     fn insert_word_at_cursor(&mut self, word: &str) {
         let Some(ed) = &mut self.current else { return };
@@ -982,10 +993,21 @@ impl UrlnoteApp {
                 }
                 Msg::EditorPosted(content) => {
                     if !self.editor.open_id.is_empty() {
+                        let oid = self.editor.open_id.clone();
+                        let mut applied = false;
                         if let Some(ed) = &mut self.current {
-                            if ed.note.id == self.editor.open_id {
-                                ed.note.content = content;
+                            if ed.note.id == oid {
+                                ed.note.content = content.clone();
                                 ed.mark_edit();
+                                applied = true;
+                            }
+                        }
+                        if !applied {
+                            if let Some(f) = &mut self.oss.current {
+                                if f.key == oid {
+                                    f.content = content;
+                                    f.mark_edit();
+                                }
                             }
                         }
                     }
@@ -1408,33 +1430,65 @@ impl UrlnoteApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // Vditor 状态行(先渲染,避免与下方 f 借用冲突)
+            let cur_key = self.oss.current.as_ref().map(|f| f.key.clone());
+            let editor_open = !self.editor.open_id.is_empty();
+            let editor_for_this =
+                editor_open && cur_key.as_deref() == Some(self.editor.open_id.as_str());
+            let editor_other = editor_open && !editor_for_this;
+            ui.horizontal(|ui| {
+                if editor_for_this {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(60, 160, 90),
+                        "✅ Vditor 编辑中(浏览器窗口,自动保存回桶)",
+                    );
+                    if ui.button("✕ 断开编辑器").on_hover_text("浏览器标签页请手动关闭").clicked() {
+                        self.close_editor();
+                    }
+                } else {
+                    if ui.button("📝 用 Vditor 编辑").clicked() {
+                        self.oss_open_vditor();
+                    }
+                    if editor_other {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 160, 40),
+                            "⚠️ 编辑器开着别的文档(互不干扰)",
+                        );
+                    }
+                }
+            });
+            ui.separator();
             let Some(f) = &mut self.oss.current else {
                 ui.weak("左侧选择 md 文件,或新建");
                 return;
             };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("字号").size(12.0).weak());
-                if ui.button("A−").clicked() {
-                    f.font_size = (f.font_size - 1).max(MIN_FONT_SIZE);
+            if !editor_for_this {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("字号").size(12.0).weak());
+                    if ui.button("A−").clicked() {
+                        f.font_size = (f.font_size - 1).max(MIN_FONT_SIZE);
+                        f.mark_edit();
+                    }
+                    if ui.button("A+").clicked() {
+                        f.font_size = (f.font_size + 1).min(MAX_FONT_SIZE);
+                        f.mark_edit();
+                    }
+                    ui.weak(format!("({} 键入自动保存)", f.font_size));
+                });
+                ui.separator();
+                let size = f.font_size as f32;
+                let mut content = std::mem::take(&mut f.content);
+                let resp = TextEdit::multiline(&mut content)
+                    .font(FontId::monospace(size))
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(30)
+                    .show(ui);
+                f.content = content;
+                if resp.response.changed() {
                     f.mark_edit();
                 }
-                if ui.button("A+").clicked() {
-                    f.font_size = (f.font_size + 1).min(MAX_FONT_SIZE);
-                    f.mark_edit();
-                }
-                ui.weak(format!("({} 键入自动保存)", f.font_size));
-            });
-            ui.separator();
-            let size = f.font_size as f32;
-            let mut content = std::mem::take(&mut f.content);
-            let resp = TextEdit::multiline(&mut content)
-                .font(FontId::monospace(size))
-                .desired_width(f32::INFINITY)
-                .desired_rows(30)
-                .show(ui);
-            f.content = content;
-            if resp.response.changed() {
-                f.mark_edit();
+            } else {
+                ui.weak("正文正在 Vditor 浏览器窗口中编辑(此处置灰)");
             }
         });
 
