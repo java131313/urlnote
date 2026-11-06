@@ -10,6 +10,7 @@ use shared::{
     NoteMeta, OkResponse, SaveRequest, WhoamiResponse, MAX_FONT_SIZE, MIN_FONT_SIZE,
 };
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod s3;
@@ -37,6 +38,9 @@ enum Msg {
     OssGot(Result<(String, String, String), String>), // key, 正文, settings.json
     OssPut(Result<String, String>),                   // key
     OssDelete(Result<(), String>),
+    // ---- Vditor 外部编辑器(loopback 桥) ----
+    EditorPosted(String),
+    EditorExited,
 }
 
 /// 后台线程执行请求,完成后经 channel 回 UI 线程并触发重绘。
@@ -202,6 +206,296 @@ impl OssState {
     }
 }
 
+/// Vditor 编辑器子进程的桥状态:GET 快照 + 子进程。
+struct EditorCtl {
+    /// loopback 服务端口与令牌(随页面 URL 传给子进程)。
+    port: u16,
+    token: String,
+    /// 当前编辑器承载的文档快照(/editor/doc 由此应答;POST 写回)。
+    doc: Arc<Mutex<EditorDoc>>,
+    child: Option<Arc<Mutex<std::process::Child>>>,
+    open_id: String,
+}
+
+#[derive(Clone)]
+struct EditorDoc {
+    id: String,
+    title: String,
+    content: String,
+}
+
+impl EditorCtl {
+    fn empty() -> Self {
+        Self {
+            port: 0,
+            token: String::new(),
+            doc: Arc::new(Mutex::new(EditorDoc { id: String::new(), title: String::new(), content: String::new() })),
+            child: None,
+            open_id: String::new(),
+        }
+    }
+}
+
+impl EditorCtl {
+    /// 启动 loopback HTTP 桥(127.0.0.1 随机端口),供编辑器页面与
+    /// 主程序交换正文/资源/图片上传。令牌随 URL 传递,拒绝越权 id。
+    fn start_bridge(&mut self, tx: Sender<Msg>, ctx: egui::Context, client: reqwest::blocking::Client) {
+        let server = match tiny_http::Server::http("127.0.0.1:0") {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("editor bridge failed: {e}");
+                return;
+            }
+        };
+        self.port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(0);
+        self.token = new_note_id() + &new_note_id();
+
+        let token = self.token.clone();
+        let doc = self.doc.clone();
+        std::thread::spawn(move || {
+            for mut req in server.incoming_requests() {
+                let resp = bridge_handle(&mut req, &token, &doc, &tx, &client);
+                let _ = req.respond(resp);
+                ctx.request_repaint();
+            }
+        });
+    }
+}
+
+/// 桥请求处理(运行在桥线程):页面/正文/资源/上传。
+fn bridge_handle(
+    req: &mut tiny_http::Request,
+    token: &str,
+    doc: &Arc<Mutex<EditorDoc>>,
+    tx: &Sender<Msg>,
+    client: &reqwest::blocking::Client,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    use tiny_http::{Header, Response};
+    let ok = |body: String, ctype: &str| {
+        Response::from_string(body).with_header(
+            Header::from_bytes(&b"Content-Type"[..], ctype.as_bytes()).unwrap(),
+        )
+    };
+    let cors = |r: Response<std::io::Cursor<Vec<u8>>>| {
+        r.with_header(Header::from_bytes(&b"Access-Control-Allow-Origin"[..], &b"*"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Access-Control-Allow-Headers"[..], &b"*"[..]).unwrap())
+            .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"*"[..]).unwrap())
+    };
+    let url = req.url().to_string();
+    let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+    let q = |k: &str| -> String {
+        query
+            .split('&')
+            .filter_map(|p| p.split_once('='))
+            .find(|(a, _)| *a == k)
+            .map(|(_, v)| urldecode(v))
+            .unwrap_or_default()
+    };
+    if q("token") != token {
+        return cors(ok("{\"error\":\"forbidden\"}".into(), "application/json").with_status_code(403));
+    }
+
+    if *req.method() == tiny_http::Method::Options {
+        return cors(ok(String::new(), "text/plain"));
+    }
+
+    match (req.method().clone(), path) {
+        (tiny_http::Method::Get, "/editor/page") => {
+            let html = std::fs::read_to_string(assets_dir().join("editor.html"))
+                .unwrap_or_else(|e| format!("editor.html 缺失:{e}"));
+            cors(ok(html, "text/html; charset=utf-8"))
+        }
+        (tiny_http::Method::Get, "/editor/doc") => {
+            let id = q("id");
+            let d = doc.lock().unwrap();
+            if d.id != id {
+                return cors(ok("{\"error\":\"doc mismatch\"}".into(), "application/json").with_status_code(409));
+            }
+            cors(ok(
+                serde_json::json!({"content": d.content, "title": d.title}).to_string(),
+                "application/json",
+            ))
+        }
+        (tiny_http::Method::Post, "/editor/doc") => {
+            let id = q("id");
+            let mut body = String::new();
+            if req.as_reader().read_to_string(&mut body).is_err() {
+                return cors(ok("{\"error\":\"bad body\"}".into(), "application/json").with_status_code(400));
+            }
+            let content = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["content"].as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+            {
+                let mut d = doc.lock().unwrap();
+                if d.id == id {
+                    d.content = content.clone();
+                }
+            }
+            let _ = tx.send(Msg::EditorPosted(content));
+            cors(ok("{\"ok\":true}".into(), "application/json"))
+        }
+        (tiny_http::Method::Post, "/editor/upload") => {
+            // 简易 multipart 解析(vditor 单文件字段 file[]),转发后端 /api/upload。
+            let mut body = Vec::new();
+            if req.as_reader().read_to_end(&mut body).is_err() {
+                return cors(ok("{\"succMap\":{}}".into(), "application/json"));
+            }
+            let ct = req
+                .headers()
+                .iter()
+                .find(|h| h.field.equiv("Content-Type"))
+                .and_then(|h| h.value.as_str().parse::<String>().ok())
+                .unwrap_or_default();
+            let result = parse_multipart(&ct, &body)
+                .and_then(|(fname, bytes)| upload_to_backend(client, &fname, &bytes));
+            let succ = match result {
+                Ok(url) => serde_json::json!({ fname_of(&url): url }),
+                Err(_) => serde_json::json!({}),
+            };
+            cors(ok(serde_json::json!({"succMap": succ}).to_string(), "application/json"))
+        }
+        (tiny_http::Method::Get, p) if p.starts_with("/vditor/") => {
+            let rel = p.trim_start_matches("/vditor/");
+            if rel.contains("..") {
+                return cors(ok("not found".into(), "text/plain").with_status_code(404));
+            }
+            let file = assets_dir().join("vditor").join(rel);
+            match std::fs::read(&file) {
+                Ok(bytes) => {
+                    let ctype = match file.extension().and_then(|e| e.to_str()) {
+                        Some("js") => "text/javascript",
+                        Some("css") => "text/css",
+                        Some("png") => "image/png",
+                        Some("svg") => "image/svg+xml",
+                        Some("woff") => "font/woff",
+                        Some("woff2") => "font/woff2",
+                        Some("ttf") => "font/ttf",
+                        _ => "application/octet-stream",
+                    };
+                    cors(ok(String::from_utf8_lossy(&bytes).into_owned(), ctype))
+                }
+                Err(_) => cors(ok("not found".into(), "text/plain").with_status_code(404)),
+            }
+        }
+        _ => cors(ok("not found".into(), "text/plain").with_status_code(404)),
+    }
+}
+
+fn fname_of(url: &str) -> String {
+    url.rsplit('/').next().unwrap_or(url).to_string()
+}
+
+/// 极简 multipart:取第一个 file[] 文件(filename + 内容字节)。
+fn parse_multipart(content_type: &str, body: &[u8]) -> Result<(String, Vec<u8>), String> {
+    let boundary = content_type
+        .split("boundary=")
+        .nth(1)
+        .ok_or("no boundary")?
+        .trim_matches('"')
+        .to_string();
+    let marker = format!("--{boundary}");
+    let text = String::from_utf8_lossy(body);
+    for part in text.split(&marker) {
+        if part.contains("name=\"file[]\"") && part.contains("filename=\"") {
+            let fname = part
+                .split("filename=\"")
+                .nth(1)
+                .and_then(|s| s.split('"').next())
+                .unwrap_or("upload.bin")
+                .to_string();
+            let content = part
+                .split("\r\n\r\n")
+                .nth(1)
+                .unwrap_or("")
+                .trim_end_matches("\r\n-")
+                .trim_end_matches("\r\n")
+                .as_bytes()
+                .to_vec();
+            if !content.is_empty() {
+                return Ok((fname, content));
+            }
+        }
+    }
+    Err("no file part".into())
+}
+
+/// 转发后端 /api/upload(带主程序的会话 cookie),返回图片 URL。
+fn upload_to_backend(client: &reqwest::blocking::Client, fname: &str, bytes: &[u8]) -> Result<String, String> {
+    let part = reqwest::blocking::multipart::Part::bytes(bytes.to_vec())
+        .file_name(fname.to_string())
+        .mime_str("application/octet-stream")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::blocking::multipart::Form::new().part("file[]", part);
+    let resp = client
+        .post(format!("{API}/api/upload"))
+        .multipart(form)
+        .send()
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let v: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+    v["data"][0]["url"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "no url".into())
+}
+
+fn urldecode(s: &str) -> String {
+    let mut out = Vec::new();
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(h) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(h);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// 资源目录:exe 旁 > .app 内 Resources > 源码目录(开发期)。
+fn assets_dir() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    for cand in [
+        dir.join("assets"),
+        dir.join("../Resources/assets"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets"),
+    ] {
+        if cand.exists() {
+            return cand;
+        }
+    }
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets")
+}
+
+/// 编辑器子进程二进制:与主程序同目录;开发期回退 target/{debug,release}。
+fn editor_exe() -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap_or_default();
+    let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    let sib = dir.join("urlnote-editor");
+    if sib.exists() {
+        return sib;
+    }
+    for cand in [
+        dir.join("../Resources/urlnote-editor"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/urlnote-editor"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/debug/urlnote-editor"),
+    ] {
+        if cand.exists() {
+            return cand;
+        }
+    }
+    sib
+}
+
 struct UrlnoteApp {
     ctx: egui::Context,
     client: reqwest::blocking::Client,
@@ -227,6 +521,7 @@ struct UrlnoteApp {
     cursor_index: usize,
     view: View,
     oss: OssState,
+    editor: EditorCtl,
 }
 
 impl UrlnoteApp {
@@ -237,6 +532,8 @@ impl UrlnoteApp {
             .build()
             .expect("http client");
         let (tx, rx) = channel();
+        let mut editor = EditorCtl::empty();
+        editor.start_bridge(tx.clone(), ctx.clone(), client.clone());
         let mut app = Self {
             ctx: ctx.clone(),
             client,
@@ -258,6 +555,7 @@ impl UrlnoteApp {
             cursor_index: 0,
             view: View::Notes,
             oss: OssState::new(),
+            editor,
         };
         // 启动时探测既有会话(cookie jar 为空,必然未登录,仅校验连通性)。
         let tx0 = app.rx_tx();
@@ -569,6 +867,72 @@ impl UrlnoteApp {
         });
     }
 
+    // ---- Vditor 外部编辑器 ----
+
+    fn open_vditor(&mut self) {
+        let Some(ed) = &self.current else { return };
+        let id = ed.note.id.clone();
+        let title = if ed.note.title.trim().is_empty() {
+            id.clone()
+        } else {
+            ed.note.title.clone()
+        };
+        {
+            let mut d = self.editor.doc.lock().unwrap();
+            *d = EditorDoc { id: id.clone(), title: title.clone(), content: ed.note.content.clone() };
+        }
+        self.spawn_editor(&id, &title);
+    }
+
+    fn spawn_editor(&mut self, id: &str, title: &str) {
+        self.close_editor();
+        let exe = editor_exe();
+        match std::process::Command::new(&exe)
+            .args([
+                "--port", &self.editor.port.to_string(),
+                "--token", &self.editor.token,
+                "--id", id,
+                "--title", title,
+            ])
+            .spawn()
+        {
+            Ok(child) => {
+                let shared = Arc::new(Mutex::new(child));
+                self.editor.child = Some(shared.clone());
+                self.editor.open_id = id.to_string();
+                let tx = self.rx_tx();
+                let ctx = self.ctx.clone();
+                let id_owned = id.to_string();
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(Duration::from_millis(300));
+                        let exited = shared
+                            .lock()
+                            .map(|mut c| c.try_wait().ok().flatten().is_some())
+                            .unwrap_or(true);
+                        if exited {
+                            let _ = tx.send(Msg::EditorExited);
+                            ctx.request_repaint();
+                            break;
+                        }
+                    }
+                    let _ = id_owned;
+                });
+                self.status = "Vditor 编辑器已打开".into();
+            }
+            Err(e) => self.status = format!("编辑器启动失败:{e}(缺 urlnote-editor 二进制?)"),
+        }
+    }
+
+    fn close_editor(&mut self) {
+        if let Some(child) = self.editor.child.take() {
+            if let Ok(mut c) = child.lock() {
+                let _ = c.kill();
+            }
+        }
+        self.editor.open_id.clear();
+    }
+
     /// 用选中的词典词替换光标前的锚词。
     fn insert_word_at_cursor(&mut self, word: &str) {
         let Some(ed) = &mut self.current else { return };
@@ -654,10 +1018,25 @@ impl UrlnoteApp {
                     self.dict.langs = langs;
                 }
                 Msg::Logout => {
+                    self.close_editor();
                     self.screen = Screen::Login;
                     self.current = None;
                     self.notes.clear();
                     self.dict.close();
+                }
+                Msg::EditorPosted(content) => {
+                    if !self.editor.open_id.is_empty() {
+                        if let Some(ed) = &mut self.current {
+                            if ed.note.id == self.editor.open_id {
+                                ed.note.content = content;
+                                ed.mark_edit();
+                            }
+                        }
+                    }
+                }
+                Msg::EditorExited => {
+                    self.editor.child = None;
+                    self.editor.open_id.clear();
                 }
                 Msg::OssCreds(res) => match res {
                     Ok(c) => {
@@ -849,6 +1228,37 @@ impl UrlnoteApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
+            // 编辑器状态行(先渲染,避免与下方 ed 借用冲突)
+            let editor_open = self.editor.child.is_some();
+            let editor_for_this = editor_open
+                && self
+                    .current
+                    .as_ref()
+                    .map(|e| e.note.id == self.editor.open_id)
+                    .unwrap_or(false);
+            let editor_other = editor_open && !editor_for_this;
+            ui.horizontal(|ui| {
+                if editor_for_this {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(60, 160, 90),
+                        "✅ Vditor 编辑中(独立窗口,自动回写)",
+                    );
+                    if ui.button("✕ 关闭编辑器").clicked() {
+                        self.close_editor();
+                    }
+                } else {
+                    if ui.button("📝 用 Vditor 编辑正文").clicked() {
+                        self.open_vditor();
+                    }
+                    if editor_other {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(230, 160, 40),
+                            "⚠️ 编辑器开着别的便签(互不干扰,切回那篇或先关闭)",
+                        );
+                    }
+                }
+            });
+            ui.separator();
             let Some(ed) = &mut self.current else {
                 ui.weak("左侧选择或新建便签");
                 return;
@@ -900,23 +1310,25 @@ impl UrlnoteApp {
                 }
             });
             ui.separator();
-            // 正文(markdown 源码编辑;预览在后续阶段)
-            let size = ed.note.font_size.max(MIN_FONT_SIZE) as f32;
-            let mut content = std::mem::take(&mut ed.note.content);
-            let output = TextEdit::multiline(&mut content)
-                .font(FontId::monospace(size))
-                .desired_width(f32::INFINITY)
-                .desired_rows(30)
-                .lock_focus(true)
-                .show(ui);
-            ed.note.content = content;
-            if output.response.changed() {
-                ed.mark_edit();
-            }
-            if let Some(range) = output.cursor_range {
-                let idx = range.primary.ccursor.index.min(ed.note.content.len());
-                if idx != self.cursor_index {
-                    self.cursor_index = idx;
+            if !editor_for_this {
+                // markdown 简易编辑(Vditor 不可用时的退路)
+                let size = ed.note.font_size.max(MIN_FONT_SIZE) as f32;
+                let mut content = std::mem::take(&mut ed.note.content);
+                let output = TextEdit::multiline(&mut content)
+                    .font(FontId::monospace(size))
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(30)
+                    .lock_focus(true)
+                    .show(ui);
+                ed.note.content = content;
+                if output.response.changed() {
+                    ed.mark_edit();
+                }
+                if let Some(range) = output.cursor_range {
+                    let idx = range.primary.ccursor.index.min(ed.note.content.len());
+                    if idx != self.cursor_index {
+                        self.cursor_index = idx;
+                    }
                 }
             }
         });
@@ -1256,9 +1668,12 @@ fn urlencode(s: &str) -> String {
 }
 
 impl eframe::App for UrlnoteApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.close_editor();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll();
-        match self.screen {
+        self.poll();        match self.screen {
             Screen::Login => self.ui_login(ctx),
             Screen::Main => {
                 self.ui_main(ctx);

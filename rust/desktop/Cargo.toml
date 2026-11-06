@@ -2,7 +2,15 @@
 name = "urlnote-desktop"
 version = "0.1.0"
 edition = "2021"
-description = "urlnote macOS 原生桌面版(eframe/egui + reqwest,直连 urlnote-server API,功能与 Web 版对齐)"
+description = "urlnote macOS 原生桌面版(eframe/egui + reqwest 直连后端;markdown 正文经 loopback 桥走独立 wry 窗口的 Vditor)"
+
+[[bin]]
+name = "urlnote-desktop"
+path = "src/main.rs"
+
+[[bin]]
+name = "urlnote-editor"
+path = "src/editor_main.rs"
 
 [dependencies]
 eframe = "0.31"
@@ -19,4 +27,9 @@ rand = "0.8"
 hmac = "0.12"
 sha2 = "0.10"
 quick-xml = "0.37"
+tiny_http = "0.12"
 shared = { path = "../shared" }
+
+# Vditor 编辑器子进程(独立小窗,仅承载 wry webview)
+tao = "0.30"
+wry = "0.48"

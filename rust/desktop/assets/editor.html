@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>urlnote 编辑器</title>
+<link rel="stylesheet" href="/vditor/dist/index.css">
+<script src="/vditor/dist/index.min.js"></script>
+<script src="/vditor/dist/js/i18n/zh_CN.js"></script>
+<style>
+  html, body { height: 100%; margin: 0; background: #fff; }
+  #vd { height: 100vh; }
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; color: #b91c1c; font: 14px sans-serif; white-space: pre-wrap; padding: 24px; }
+</style>
+</head>
+<body>
+<div id="vd"></div>
+<div id="err"></div>
+<script>
+const Q = new URLSearchParams(location.search);
+const ID = Q.get('id') || '';
+const TOKEN = Q.get('token') || '';
+const BASE = location.origin;
+let dirty = false;
+
+function fail(msg) {
+  const e = document.getElementById('err');
+  e.style.display = 'flex';
+  e.textContent = msg;
+}
+
+async function api(path, init) {
+  const r = await fetch(BASE + path + (path.includes('?') ? '&' : '?') + 'id=' + encodeURIComponent(ID) + '&token=' + encodeURIComponent(TOKEN), init);
+  if (!r.ok) throw new Error(path + ' -> HTTP ' + r.status);
+  return r.json();
+}
+
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+const postContent = debounce((md) => {
+  api('/editor/doc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: md }),
+  }).then(() => { dirty = false; document.title = '📝 ' + (document._title || '编辑'); })
+    .catch(() => {});
+}, 500);
+
+(async () => {
+  let d;
+  try { d = await api('/editor/doc'); }
+  catch (e) { return fail('无法从主程序获取正文:\n' + e.message + '\n\n(请从主窗口重新打开编辑器)'); }
+  document._title = d.title || '编辑';
+  document.title = '📝 ' + document._title;
+
+  const vditor = new Vditor('vd', {
+    height: '100%',
+    lang: 'zh_CN',
+    cache: { enable: false },
+    toolbar: [
+      'headings', 'bold', 'italic', 'strike', '|',
+      'list', 'ordered-list', 'check', 'quote', '|',
+      'code', 'inline-code', 'link', 'table', 'upload', '|',
+      'undo', 'redo', '|', 'edit-mode', 'preview', 'fullscreen',
+    ],
+    upload: {
+      url: BASE + '/editor/upload',
+      fieldName: 'file[]',
+      format: (_files, responseText) => {
+        // 主程序已按 vditor 期望结构返回 succMap
+        const r = JSON.parse(responseText);
+        return JSON.stringify({ msg: '', code: 0, data: { errFiles: [], succMap: r.succMap || {} } });
+      },
+    },
+    after: () => {
+      vditor.setValue(d.content || '');
+      vditor.focus();
+    },
+    input: (md) => {
+      dirty = true;
+      document.title = '● 📝 ' + document._title;
+      postContent(md);
+    },
+  });
+  window._vditor = vditor;
+})();
+
+window.addEventListener('beforeunload', (e) => {
+  if (dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+</script>
+</body>
+</html>
