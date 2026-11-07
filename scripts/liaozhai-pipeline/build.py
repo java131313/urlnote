@@ -59,14 +59,31 @@ ACCENT_EXTRA = {
  "gate": f'<path d="M60 180 L60 120 L96 120 L96 180 M224 180 L224 120 L260 120 L260 180" stroke="{INK}" stroke-width="2" fill="none"/>',
 }
 
+
+MOTIFS.update({
+ "storm": f'<path d="M80 90 q20 -28 48 -16 q10 -20 34 -12 q26 -14 40 8 q24 -4 28 20 l0 8 l-150 0z" fill="{INK}" opacity="0.85"/>' + ''.join(f'<line x1="{x}" y1="112" x2="{x-6}" y2="132" stroke="{BLUE}" stroke-width="2"/>' for x in range(100, 250, 22)) + ''.join(f'<circle cx="{x}" cy="{y}" r="2.4" fill="#f5e6b8"/>' for x, y in [(110,142),(150,152),(190,144),(230,150)]),
+ "sorcerer": s_path("M110 170 q50 -30 100 0", 2.2) + f'<circle cx="160" cy="108" r="14" fill="none" stroke="{INK}" stroke-width="2.2"/>' + s_path("M160 122 L160 170 M136 140 L184 140 M160 132 L140 118 M160 132 L180 118", 2.2) + f'<path d="M146 94 l14 -18 l14 18z" fill="{ACC}"/>',
+ "bones": s_path("M96 168 L224 168", 2) + ''.join(f'<ellipse cx="{x}" cy="160" rx="10" ry="5" fill="none" stroke="{INK}" stroke-width="1.8" transform="rotate({r} {x} 160)"/>' for x, r in [(120,-20),(150,15),(180,-10),(210,20)]) + f'<circle cx="150" cy="120" r="12" fill="none" stroke="{INK}" stroke-width="2"/><circle cx="146" cy="118" r="1.8" fill="{INK}"/><circle cx="154" cy="118" r="1.8" fill="{INK}"/>',
+ "wheel": f'<circle cx="160" cy="120" r="46" fill="none" stroke="{INK}" stroke-width="2.6"/>' + f'<circle cx="160" cy="120" r="8" fill="{ACC}"/>' + ''.join(f'<line x1="160" y1="120" x2="{160+44*__import__("math").cos(a)}" y2="{120+44*__import__("math").sin(a)}" stroke="{INK}" stroke-width="1.8"/>' for a in [0, 1.05, 2.09, 3.14, 4.19, 5.24]),
+ "ghosts": ''.join(f'<path d="M{x} {y+8} q-14 4 -14 24 l0 22 q5 -5 9 0 q4 -5 9 0 l0 -22 q0 -20 -4 -24z" fill="none" stroke="{INK}" stroke-width="1.8"/>' for x, y in [(110, 96), (160, 82), (208, 100)]) + ''.join(f'<circle cx="{x}" cy="{y}" r="2" fill="{INK}"/>' for x, y in [(104, 122), (154, 108), (202, 126)]),
+ "maiden": s_path("M160 60 q-26 8 -26 40 q0 30 18 40 l16 0 q18 -10 18 -40 q0 -32 -26 -40z", 2.2) + f'<circle cx="160" cy="52" r="13" fill="none" stroke="{INK}" stroke-width="2.2"/>' + s_path("M160 65 L160 90", 1.6, ACC),
+ "sword": s_path("M96 168 L200 84", 3) + s_path("M188 78 L212 98", 2.4) + s_path("M96 168 l-12 10", 2.4, ACC),
+ "scholar": s_path("M120 168 L200 168", 2) + f'<rect x="132" y="120" width="56" height="34" fill="none" stroke="{INK}" stroke-width="2"/>' + s_path("M140 132 l40 0 M140 142 l28 0", 1.4, ACC) + f'<circle cx="110" cy="150" r="10" fill="none" stroke="{INK}" stroke-width="2"/>',
+ "coins": ''.join(f'<circle cx="{x}" cy="{y}" r="10" fill="none" stroke="{ACC}" stroke-width="2.2"/>' for x, y in [(130,120),(160,108),(190,122),(145,148),(175,150)]) + ''.join(f'<rect x="{x-3}" y="{y-3}" width="6" height="6" fill="{ACC}"/>' for x, y in [(130,120),(160,108),(190,122),(145,148),(175,150)]),
+ "island": s_path("M60 150 Q160 120 260 150 L260 168 L60 168z", 2.2) + f'<rect x="140" y="108" width="40" height="42" fill="none" stroke="{INK}" stroke-width="2"/>' + s_path("M132 108 L160 88 L188 108", 2.2) + f'<circle cx="230" cy="70" r="16" fill="#f5e6b8" stroke="{INK}" stroke-width="1.2"/>',
+ "temple": MOTIFS["pagoda"].replace("M120", "M110").replace("M200", "M190"),
+ "scroll": s_path("M110 100 L210 100 L210 150 L110 150z", 2.2) + s_path("M110 112 L210 112 M110 126 L210 126 M110 140 L196 140", 1.4, ACC),
+ "eagletiger": f'<path d="M110 130 q30 -34 60 -10 q10 -20 34 -8 q22 12 8 34 q-16 24 -50 12 q-34 12 -52 -10z" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<circle cx="196" cy="122" r="3" fill="{ACC}"/>' + s_path("M130 108 q10 -14 26 -12", 2, ACC),
+ "cricket": s_path("M130 140 q30 -24 60 0 q-8 20 -30 20 q-22 0 -30 -20z", 2.2) + s_path("M150 122 L146 108 M170 122 L176 108", 1.8) + s_path("M190 140 q16 -4 20 -16", 2, ACC) + ''.join(f'<line x1="{x}" y1="150" x2="{x-4}" y2="162" stroke="{INK}" stroke-width="1.6"/>' for x in [140, 155, 172, 186]),
+ "skinmask": f'<path d="M128 92 q32 -22 64 0 q10 30 0 60 q-32 22 -64 0 q-10 -30 0 -60z" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<path d="M128 92 q32 14 64 0 l0 22 q-32 14 -64 0z" fill="{ACC}" opacity="0.25"/>' + f'<circle cx="148" cy="128" r="3" fill="{INK}"/><circle cx="172" cy="128" r="3" fill="{INK}"/>' + s_path("M148 148 q12 8 24 0", 1.8, ACC),
+})
+
 data = {}
-for f in ['a', 'b', 'c']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
-texts = json.load(open('/tmp/liaozhai_2_20.json'))
+texts = json.load(open('/tmp/liaozhai_2_40.json'))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
-titles = {"001": "考城隍"}
-for sid, k in sid2key.items():
-    titles[k] = texts[sid]['title']
+titles = json.load(open('/tmp/lzbuild/titles.json'))
 
 JAR = '/tmp/lz_ck.txt'
 subprocess.run(['curl', '-s', '-c', JAR, '-H', 'Content-Type: application/json',

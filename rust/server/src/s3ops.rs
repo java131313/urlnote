@@ -172,6 +172,21 @@ pub async fn object_size(cfg: &S3Cfg, key: &str) -> Result<u64, String> {
 }
 
 /// 回写整个对象(payload 用真实内容哈希,避免 UNSIGNED-PAYLOAD 兼容性问题)。
+pub async fn delete_object(cfg: &S3Cfg, key: &str) -> Result<(), String> {
+    let (url, path) = object_url(cfg, key);
+    let signed = sign(cfg, "DELETE", &path, &sha256_hex(b""));
+    let resp = signed_req(cfg, reqwest::Method::DELETE, &url, &signed)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let code = resp.status();
+    if code.is_success() || code == reqwest::StatusCode::NOT_FOUND {
+        Ok(())
+    } else {
+        Err(format!("DELETE failed: {code}"))
+    }
+}
+
 pub async fn put_object(cfg: &S3Cfg, key: &str, body: &[u8]) -> Result<(), String> {
     let (url, path) = object_url(cfg, key);
     let hash = sha256_hex(body);

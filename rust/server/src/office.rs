@@ -428,12 +428,71 @@ pub async fn put_contents(
     save_contents(&key, &body).await
 }
 
+/// 会话鉴权的 S3 直写(文件库的服务端写入通道,浏览器/桌面可免 SigV4
+/// 凭据)。key 限制扩展名与安全字符,大小 64MB 内。
+const OSS_WRITE_EXTS: &[&str] = &["md", "markdown", "txt", "svg", "json"];
+
+fn valid_oss_write_key(key: &str) -> bool {
+    if key.is_empty() || key.len() > 512 || key.contains("..") || key.starts_with('/') {
+        return false;
+    }
+    if !key.chars().all(|c| c.is_alphanumeric() || " ._-+/()（）·、".contains(c)) {
+        return false;
+    }
+    let ext = key.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    OSS_WRITE_EXTS.contains(&ext.as_str())
+}
+
+/// PUT /api/oss/{*key} —— body 原样写入桶。
+pub async fn oss_put(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    body: axum::body::Bytes,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    require_user(&st, &headers).await?;
+    if !valid_oss_write_key(&key) {
+        return Err(json_err(StatusCode::BAD_REQUEST, "bad key"));
+    }
+    let cfg = s3ops::S3Cfg::from_env()
+        .ok_or_else(|| json_err(StatusCode::SERVICE_UNAVAILABLE, "storage not configured"))?;
+    s3ops::put_object(&cfg, &key, &body)
+        .await
+        .map_err(|e| json_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(crate::util::json_vec(
+        StatusCode::OK,
+        serde_json::to_vec(&serde_json::json!({ "ok": true, "key": key })).unwrap(),
+    ))
+}
+
+/// DELETE /api/oss/{*key} —— 会话鉴权的 S3 直删(文件库的服务端删除通道)。
+pub async fn oss_delete(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    require_user(&st, &headers).await?;
+    if !valid_oss_write_key(&key) {
+        return Err(json_err(StatusCode::BAD_REQUEST, "bad key"));
+    }
+    let cfg = s3ops::S3Cfg::from_env()
+        .ok_or_else(|| json_err(StatusCode::SERVICE_UNAVAILABLE, "storage not configured"))?;
+    s3ops::delete_object(&cfg, &key)
+        .await
+        .map_err(|e| json_err(StatusCode::BAD_GATEWAY, &e))?;
+    Ok(crate::util::json_vec(
+        StatusCode::OK,
+        serde_json::to_vec(&serde_json::json!({ "ok": true })).unwrap(),
+    ))
+}
+
 /// WOPI 路由(挂在 / 上;上传体 64MB 上限,Office 文档富余)。
 pub fn router() -> Router<AppState> {
-    use axum::routing::{get, post};
+    use axum::routing::{delete, get, post, put};
     Router::new()
         .route("/api/office/config", get(config))
         .route("/api/office/callback", post(office_callback))
+        .route("/api/oss/{*key}", put(oss_put).delete(oss_delete))
         .route(
             "/wopi/files/{id}",
             get(check_file_info).post(wopi_post),
