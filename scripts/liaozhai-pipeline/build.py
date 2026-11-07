@@ -129,8 +129,15 @@ MOTIFS.update({
  "lantern": f'<g stroke="{ACC}" stroke-width="1.8" fill="#c94f4f"><line x1="150" y1="70" x2="150" y2="86"/><ellipse cx="150" cy="108" rx="18" ry="24"/><line x1="186" y1="78" x2="186" y2="92"/><ellipse cx="186" cy="112" rx="14" ry="19"/></g>' + s_path("M132 108 L168 108 M138 94 L162 94 M138 122 L162 122", 1, "#f8f3e6"),
 })
 
+
+MOTIFS.update({
+ "frog": f'<ellipse cx="160" cy="140" rx="30" ry="20" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<circle cx="148" cy="122" r="6" fill="none" stroke="{INK}" stroke-width="2"/><circle cx="172" cy="122" r="6" fill="none" stroke="{INK}" stroke-width="2"/>' + s_path("M140 168 q20 10 40 0", 2, INK),
+ "lotus": ''.join(f'<path d="M160 150 q-{d} -34 -{d*2} -18 q{d} 26 {d*2} 26z" fill="none" stroke="{ACC}" stroke-width="2"/>' for d in [10, 22, 34]) + ''.join(f'<path d="M160 150 q{d} -34 {d*2} -18 q-{d} 26 -{d*2} 26z" fill="none" stroke="{ACC}" stroke-width="2"/>' for d in [10, 22, 34]) + s_path("M160 176 L160 150", 2.4, "#2e7d4f"),
+ "mantis": s_path("M150 160 L150 110 M150 122 L124 96 M150 122 L176 96 M150 136 L126 146 M150 136 L174 146", 2.4, "#2e7d4f") + f'<circle cx="150" cy="100" r="9" fill="none" stroke="#2e7d4f" stroke-width="2.2"/>' + f'<circle cx="146" cy="98" r="1.6" fill="#2e7d4f"/><circle cx="154" cy="98" r="1.6" fill="#2e7d4f"/>',
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'aa']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
@@ -139,6 +146,7 @@ texts.update(json.load(open('/tmp/liaozhai_81_100.json')))
 texts.update(json.load(open('/tmp/liaozhai_101_120.json')))
 texts.update(json.load(open('/tmp/liaozhai_121_140.json')))
 texts.update(json.load(open('/tmp/liaozhai_141_160.json')))
+texts.update(json.load(open('/tmp/liaozhai_161_180.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
