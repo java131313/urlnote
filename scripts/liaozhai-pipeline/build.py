@@ -116,14 +116,29 @@ MOTIFS.update({
  "wave": ''.join(f'<path d="M60 {y} q25 -12 50 0 q25 12 50 0 q25 -12 50 0" stroke="{BLUE}" stroke-width="2" fill="none"/>' for y in range(110, 180, 18)),
 })
 
+
+MOTIFS.update({
+ "leaf": s_path("M160 170 L160 100 M160 100 q-30 -18 -44 4 q30 18 44 -4 M160 100 q30 -18 44 4 q-30 18 -44 4", 2.2, "#2e7d4f"),
+ "mask": f'<path d="M128 92 q32 -22 64 0 q10 30 0 60 q-32 22 -64 0 q-10 -30 0 -60z" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<circle cx="148" cy="122" r="5" fill="{ACC}"/><circle cx="172" cy="122" r="5" fill="{ACC}"/>' + s_path("M140 146 q20 -10 40 0", 2, INK),
+})
+
+
+MOTIFS.update({
+ "pot": s_path("M120 130 q0 -20 40 -20 q40 0 40 20 l-6 8 l-68 0z", 2.4) + s_path("M116 138 L204 138 M120 150 L200 150", 2.2) + f'<circle cx="150" cy="112" r="4" fill="{ACC}" opacity="0.6"/><circle cx="168" cy="106" r="3" fill="{ACC}" opacity="0.45"/>' + s_path("M140 96 q4 -12 -2 -20 M166 92 q6 -10 0 -18", 1.6, "#7a86a8"),
+ "chess": f'<rect x="116" y="84" width="88" height="88" fill="none" stroke="{INK}" stroke-width="2.2"/>' + ''.join(f'<line x1="{x}" y1="84" x2="{x}" y2="172" stroke="{INK}" stroke-width="0.8"/>' for x in range(138, 204, 22)) + ''.join(f'<line x1="116" y1="{y}" x2="204" y2="{y}" stroke="{INK}" stroke-width="0.8"/>' for y in range(106, 172, 22)) + f'<circle cx="160" cy="128" r="7" fill="{ACC}"/><circle cx="138" cy="106" r="5" fill="{INK}"/>',
+ "lantern": f'<g stroke="{ACC}" stroke-width="1.8" fill="#c94f4f"><line x1="150" y1="70" x2="150" y2="86"/><ellipse cx="150" cy="108" rx="18" ry="24"/><line x1="186" y1="78" x2="186" y2="92"/><ellipse cx="186" cy="112" rx="14" ry="19"/></g>' + s_path("M132 108 L168 108 M138 94 L162 94 M138 122 L162 122", 1, "#f8f3e6"),
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
 texts.update(json.load(open('/tmp/liaozhai_61_80.json')))
 texts.update(json.load(open('/tmp/liaozhai_81_100.json')))
 texts.update(json.load(open('/tmp/liaozhai_101_120.json')))
+texts.update(json.load(open('/tmp/liaozhai_121_140.json')))
+texts.update(json.load(open('/tmp/liaozhai_141_160.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
