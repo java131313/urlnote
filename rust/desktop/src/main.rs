@@ -13,6 +13,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod draw;
 mod s3;
 
 /// 默认后端(与 Web 前端 VITE_API_BASE 一致);登录页可改,
@@ -67,6 +68,11 @@ enum Msg {
     OssDelete(Result<(), String>),
     // ---- Vditor 外部编辑器(loopback 桥) ----
     EditorPosted(String),
+    // ---- 画图 ----
+    DrawList(Result<Vec<draw::DrawMeta>, String>),
+    DrawGot(Result<draw::DrawDoc, String>),
+    DrawSaved { id: String, res: Result<(), String> },
+    DrawDeleted(Result<String, String>),
 }
 
 /// 后台线程执行请求,完成后经 channel 回 UI 线程并触发重绘。
@@ -173,6 +179,7 @@ enum Screen {
 enum View {
     Notes,
     Oss,
+    Draw,
 }
 
 struct OssFileEd {
@@ -542,6 +549,7 @@ struct UrlnoteApp {
     view: View,
     oss: OssState,
     editor: EditorCtl,
+    draw: draw::DrawState,
     /// 当前后端地址(登录页可改,成功登录后持久化)。
     api_base: String,
     /// 登录页的服务器地址输入框。
@@ -580,6 +588,7 @@ impl UrlnoteApp {
             view: View::Notes,
             oss: OssState::new(),
             editor,
+            draw: draw::DrawState::new(),
             api_base: load_api_base(),
             server: String::new(),
         };
@@ -1054,6 +1063,51 @@ impl UrlnoteApp {
                     self.notes.clear();
                     self.dict.close();
                 }
+                Msg::DrawList(res) => {
+                    self.draw.loading = false;
+                    match res {
+                        Ok(l) => self.draw.list = l,
+                        Err(e) => self.draw.status = e,
+                    }
+                }
+                Msg::DrawGot(res) => match res {
+                    Ok(d) => {
+                        if let Some(ed) = &mut self.draw.ed {
+                            if ed.id == d.id {
+                                ed.name = d.name;
+                                ed.elements = d.elements;
+                                ed.dirty = false;
+                            }
+                        }
+                    }
+                    Err(e) => self.draw.status = e,
+                },
+                Msg::DrawSaved { id, res } => {
+                    if let Some(ed) = &mut self.draw.ed {
+                        if ed.id == id {
+                            ed.saving = false;
+                            match res {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    ed.dirty = true;
+                                    self.draw.status = e;
+                                }
+                            }
+                        }
+                    }
+                }
+                Msg::DrawDeleted(res) => {
+                    self.draw.confirm_delete = None;
+                    match res {
+                        Ok(id) => {
+                            self.draw.list.retain(|m| m.id != id);
+                            if self.draw.ed.as_ref().map(|e| e.id.clone()) == Some(id) {
+                                self.draw.ed = None;
+                            }
+                        }
+                        Err(e) => self.draw.status = e,
+                    }
+                }
                 Msg::EditorPosted(content) => {
                     if !self.editor.open_id.is_empty() {
                         let oid = self.editor.open_id.clone();
@@ -1196,6 +1250,9 @@ impl UrlnoteApp {
                 if ui.selectable_label(self.view == View::Oss, "文件库").clicked() {
                     self.enter_oss();
                 }
+                if ui.selectable_label(self.view == View::Draw, "画图").clicked() {
+                    self.enter_draw();
+                }
                 if self.view == View::Notes {
                     if ui.button("＋ 新建").clicked() {
                         self.new_note();
@@ -1229,6 +1286,10 @@ impl UrlnoteApp {
 
         if self.view == View::Oss {
             self.ui_oss(ctx);
+            return;
+        }
+        if self.view == View::Draw {
+            self.ui_draw(ctx);
             return;
         }
 
@@ -1795,9 +1856,22 @@ impl eframe::App for UrlnoteApp {
                         self.oss_save_now();
                     }
                 }
+                // 画图自动保存
+                if self.view == View::Draw {
+                    let due = self
+                        .draw
+                        .ed
+                        .as_ref()
+                        .map(|ed| ed.dirty && !ed.saving && ed.last_edit.elapsed() > AUTOSAVE_DELAY)
+                        .unwrap_or(false);
+                    if due {
+                        self.draw_save_now();
+                    }
+                }
                 // 有计时器在跑时维持帧节奏(否则 egui 空闲不重绘)
                 if self.current.as_ref().map(|e| e.dirty).unwrap_or(false)
                     || self.oss.current.as_ref().map(|f| f.dirty).unwrap_or(false)
+                    || self.draw.ed.as_ref().map(|d| d.dirty).unwrap_or(false)
                     || self.search_dirty_at.is_some()
                 {
                     ctx.request_repaint_after(Duration::from_millis(150));
