@@ -136,8 +136,13 @@ MOTIFS.update({
  "mantis": s_path("M150 160 L150 110 M150 122 L124 96 M150 122 L176 96 M150 136 L126 146 M150 136 L174 146", 2.4, "#2e7d4f") + f'<circle cx="150" cy="100" r="9" fill="none" stroke="#2e7d4f" stroke-width="2.2"/>' + f'<circle cx="146" cy="98" r="1.6" fill="#2e7d4f"/><circle cx="154" cy="98" r="1.6" fill="#2e7d4f"/>',
 })
 
+
+MOTIFS.update({
+ "deer": s_path("M130 150 q-10 -30 20 -44 q24 -12 44 4 q20 16 8 40 l-6 14 l-60 0z", 2.4) + f'<circle cx="166" cy="118" r="2.4" fill="{INK}"/>' + s_path("M150 108 l-10 -18 M172 106 l8 -18", 2.4, INK),
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'aa']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'aa', 'ab', 'ac', 'ad']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
@@ -147,6 +152,7 @@ texts.update(json.load(open('/tmp/liaozhai_101_120.json')))
 texts.update(json.load(open('/tmp/liaozhai_121_140.json')))
 texts.update(json.load(open('/tmp/liaozhai_141_160.json')))
 texts.update(json.load(open('/tmp/liaozhai_161_180.json')))
+texts.update(json.load(open('/tmp/liaozhai_181_200.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
