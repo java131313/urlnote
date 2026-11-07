@@ -78,10 +78,27 @@ MOTIFS.update({
  "skinmask": f'<path d="M128 92 q32 -22 64 0 q10 30 0 60 q-32 22 -64 0 q-10 -30 0 -60z" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<path d="M128 92 q32 14 64 0 l0 22 q-32 14 -64 0z" fill="{ACC}" opacity="0.25"/>' + f'<circle cx="148" cy="128" r="3" fill="{INK}"/><circle cx="172" cy="128" r="3" fill="{INK}"/>' + s_path("M148 148 q12 8 24 0", 1.8, ACC),
 })
 
+
+MOTIFS.update({
+ "flame": f'<path d="M160 160 q-18 -22 0 -46 q6 10 10 14 q-2 -18 12 -30 q10 22 2 34 q10 -6 8 -18 q16 20 4 46 q-16 14 -34 0z" fill="none" stroke="{ACC}" stroke-width="2.2"/>' + f'<circle cx="160" cy="140" r="5" fill="{GOLD}"/>',
+ "stone": f'<ellipse cx="160" cy="150" rx="46" ry="26" fill="none" stroke="{INK}" stroke-width="2.4"/>' + s_path("M138 142 q10 8 20 2 M160 154 q10 -6 18 2", 1.6, ACC),
+ "judge": f'<rect x="116" y="76" width="88" height="88" rx="6" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<path d="M128 76 q32 -18 64 0 l0 14 q-32 -14 -64 0z" fill="{INK}"/>' + f'<circle cx="144" cy="112" r="3" fill="{INK}"/><circle cx="176" cy="112" r="3" fill="{INK}"/>' + s_path("M146 140 q14 8 28 0", 1.8, ACC) + s_path("M160 90 L160 100", 1.6),
+ "flower": ''.join(f'<circle cx="{160+26*__import__("math").cos(a):.0f}" cy="{118+26*__import__("math").sin(a):.0f}" r="11" fill="none" stroke="{ACC}" stroke-width="2"/>' for a in [0.4, 1.45, 2.5, 3.55, 4.6]) + f'<circle cx="160" cy="118" r="8" fill="{GOLD}"/>' + s_path("M160 126 q-4 30 -18 44 M160 140 q8 4 14 -2", 2, INK),
+ "mice": f'<ellipse cx="140" cy="140" rx="18" ry="12" fill="none" stroke="{INK}" stroke-width="2.2"/>' + f'<circle cx="158" cy="134" r="8" fill="none" stroke="{INK}" stroke-width="2.2"/>' + s_path("M166 132 q10 -2 12 6", 1.6, ACC) + f'<ellipse cx="196" cy="150" rx="16" ry="10" fill="none" stroke="{INK}" stroke-width="2.2"/>' + s_path("M150 146 q24 10 34 4", 1.4, ACC),
+ "quake": ''.join(f'<path d="M{x} {y} l10 -8 l10 8 l10 -8" stroke="{ACC}" stroke-width="2" fill="none"/>' for x, y in [(90,90),(120,70),(150,92),(180,66),(210,90)]) + s_path("M60 170 L260 170", 2.4) + s_path("M96 170 L104 148 M210 170 L218 146", 1.6, INK),
+ "sea": ''.join(f'<path d="M60 {y} q25 -12 50 0 q25 12 50 0 q25 -12 50 0 q25 12 30 0" stroke="{BLUE}" stroke-width="2.2" fill="none"/>' for y in range(120, 180, 18)) + s_path("M150 96 q10 -12 24 -8 q-4 12 -16 14z", 2, INK),
+ "whale": s_path("M70 130 q60 -40 130 -12 q30 10 40 -6 q10 22 -12 30 q-80 30 -158 -12z", 2.6) + f'<circle cx="216" cy="118" r="2.6" fill="{INK}"/>' + s_path("M96 118 q-6 -14 4 -22", 2, INK),
+ "turtle": f'<ellipse cx="160" cy="140" rx="52" ry="34" fill="none" stroke="{INK}" stroke-width="2.4"/>' + s_path("M132 128 q28 -18 56 0 M128 144 q32 14 64 0", 1.6, ACC) + f'<circle cx="222" cy="132" r="11" fill="none" stroke="{INK}" stroke-width="2.2"/>' + f'<circle cx="225" cy="129" r="1.8" fill="{INK}"/>',
+ "herb": s_path("M160 176 L160 108 M160 136 q-22 -4 -30 -24 q24 -2 30 18 M160 124 q22 -4 30 -24 q-24 -2 -30 18", 2.2, "#2e7d4f") + f'<circle cx="128" cy="98" r="4" fill="{ACC}"/><circle cx="192" cy="98" r="4" fill="{ACC}"/>',
+ "child": f'<circle cx="160" cy="96" r="16" fill="none" stroke="{INK}" stroke-width="2.4"/>' + s_path("M160 112 L160 150 M136 128 L184 128", 2.2) + f'<circle cx="154" cy="94" r="2" fill="{INK}"/><circle cx="166" cy="94" r="2" fill="{INK}"/>' + s_path("M154 102 q6 5 12 0", 1.4, ACC),
+ "priest": s_path("M130 172 L190 172 M160 172 L160 96 M136 130 L184 130 M160 104 L142 88 M160 104 L178 88", 2.4) + f'<circle cx="160" cy="82" r="13" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<path d="M146 66 l14 -16 l14 16z" fill="{ACC}"/>',
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
+texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
@@ -167,8 +184,9 @@ for key in sorted(data.keys()):
     svg = frame(main + acc, f"聊斋志异 · 卷一 · 第 {int(key)} 篇")
     svg_path = f"/tmp/liaozhai/{key}-{d['title']}.svg"
     open(svg_path, 'w').write(svg)
-    k1 = f"聊斋/卷一/{key}-{d['title']}.md"
-    k2 = f"聊斋/卷一/{key}-{d['title']}.svg"
+    vol = texts[sid].get('vol', '卷一')
+    k1 = f"聊斋/{vol}/{key}-{d['title']}.md"
+    k2 = f"聊斋/{vol}/{key}-{d['title']}.svg"
     if upload(md_path, k1) and upload(svg_path, k2):
         ok += 1
     else:
