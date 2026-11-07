@@ -94,11 +94,19 @@ MOTIFS.update({
  "priest": s_path("M130 172 L190 172 M160 172 L160 96 M136 130 L184 130 M160 104 L142 88 M160 104 L178 88", 2.4) + f'<circle cx="160" cy="82" r="13" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<path d="M146 66 l14 -16 l14 16z" fill="{ACC}"/>',
 })
 
+
+MOTIFS.update({
+ "wine": f'<path d="M148 84 q-16 10 -16 30 q0 24 28 24 q28 0 28 -24 q0 -20 -16 -30z" fill="none" stroke="{INK}" stroke-width="2.4"/>' + s_path("M132 96 L172 96 M160 138 L160 168 M148 168 L172 168", 2.2) + f'<circle cx="160" cy="110" r="7" fill="{ACC}" opacity="0.3"/>',
+ "dragon": s_path("M80 140 q40 -50 80 -10 q30 34 70 -4", 3) + f'<path d="M228 126 l16 -8 l-6 18z" fill="{INK}"/>' + f'<circle cx="236" cy="118" r="2" fill="{ACC}"/>' + s_path("M104 118 q-8 -14 2 -24", 2, INK),
+ "sound": ''.join(f'<path d="M{x} 150 q0 -{h} 0 -{h}" stroke="{ACC}" stroke-width="2.4" fill="none"/>' for x, h in [(120,30),(145,50),(170,70),(195,45),(220,28)]) + s_path("M104 168 L236 168", 2),
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
+texts.update(json.load(open('/tmp/liaozhai_61_80.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
