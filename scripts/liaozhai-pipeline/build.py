@@ -108,13 +108,22 @@ MOTIFS.update({
  "yaksha": s_path("M140 150 q-14 -36 10 -58 q22 -20 40 0 q24 22 10 58 l-8 26 l-44 0z", 2.4) + f'<circle cx="158" cy="116" r="3" fill="{ACC}"/><circle cx="182" cy="116" r="3" fill="{ACC}"/>' + s_path("M150 138 q20 12 40 0 M160 92 l-6 -14 M178 92 l6 -14", 2, INK),
 })
 
+
+MOTIFS.update({
+ "ball": f'<circle cx="160" cy="128" r="26" fill="none" stroke="{INK}" stroke-width="2.4"/>' + s_path("M142 110 q18 18 36 0 M134 128 l52 0 M142 146 q18 -18 36 0", 1.8, ACC),
+ "weave": ''.join(f'<line x1="120" y1="{y}" x2="200" y2="{y}" stroke="{INK}" stroke-width="1.4"/>' for y in range(90, 170, 12)) + ''.join(f'<line x1="{x}" y1="82" x2="{x}" y2="172" stroke="{ACC}" stroke-width="0.9" opacity="0.7"/>' for x in range(126, 200, 10)),
+ "bird": f'<ellipse cx="160" cy="128" rx="22" ry="16" fill="none" stroke="{INK}" stroke-width="2.4"/>' + f'<circle cx="184" cy="112" r="10" fill="none" stroke="{INK}" stroke-width="2.2"/>' + f'<path d="M194 110 l12 3 l-12 4z" fill="{ACC}"/>' + s_path("M138 138 q-14 8 -18 20", 2, INK),
+ "wave": ''.join(f'<path d="M60 {y} q25 -12 50 0 q25 12 50 0 q25 -12 50 0" stroke="{BLUE}" stroke-width="2" fill="none"/>' for y in range(110, 180, 18)),
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
 texts.update(json.load(open('/tmp/liaozhai_61_80.json')))
 texts.update(json.load(open('/tmp/liaozhai_81_100.json')))
+texts.update(json.load(open('/tmp/liaozhai_101_120.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
