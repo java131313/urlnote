@@ -315,7 +315,7 @@ fn Editor(id: String) -> impl IntoView {
             let name_v = name.get();
             let cb = Closure::once(move || {
                 spawn_local(async move {
-                    let body = serde_json::json!({ "name": name_v, "width": CW, "height": CH, "elements": elements });
+                    let body = serde_json::json!({ "name": name_v, "width": CW as i64, "height": CH as i64, "elements": elements });
                     let req = Request::put(&api_url(&format!("/api/drawing/{id}")))
                         .credentials(RequestCredentials::Include)
                         .header("Content-Type", "application/json")
