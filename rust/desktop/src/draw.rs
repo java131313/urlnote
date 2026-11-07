@@ -57,56 +57,52 @@ fn color_of(hex: &str) -> Color32 {
     Color32::from_hex(hex).unwrap_or(Color32::BLACK)
 }
 
-fn stroke_of(color: &str, width: f64) -> Stroke {
-    Stroke::new(width as f32, color_of(color))
-}
-
 /// 用 Painter 回放单个元素(橡皮 = 背景色粗线,白色画布下与擦除等价)。
-pub fn paint_el(p: &egui::Painter, el: &DrawEl) {
+/// 元素坐标是画布逻辑坐标(0..960),需映射到屏幕:origin + q*scale。
+pub fn paint_el(p: &egui::Painter, el: &DrawEl, origin: Pos2, scale: f32) {
+    let map = |q: [f64; 2]| Pos2::new(origin.x + q[0] as f32 * scale, origin.y + q[1] as f32 * scale);
+    let sw = |w: f64| (w as f32 * scale).max(0.5);
     match el {
         DrawEl::Pen { color, width, points } => {
-            let pts: Vec<Pos2> = points.iter().map(|q| Pos2::new(q[0] as f32, q[1] as f32)).collect();
+            let pts: Vec<Pos2> = points.iter().map(|q| map(*q)).collect();
             if pts.len() == 1 {
-                p.circle_filled(pts[0], (*width as f32) / 2.0, color_of(color));
+                p.circle_filled(pts[0], sw(*width) / 2.0, color_of(color));
             } else if pts.len() > 1 {
-                p.line(pts, stroke_of(color, *width));
+                p.line(pts, Stroke::new(sw(*width), color_of(color)));
             }
         }
         DrawEl::Eraser { width, points, .. } => {
-            let pts: Vec<Pos2> = points.iter().map(|q| Pos2::new(q[0] as f32, q[1] as f32)).collect();
+            let pts: Vec<Pos2> = points.iter().map(|q| map(*q)).collect();
             if pts.len() > 1 {
-                p.line(pts, Stroke::new(*width as f32 * 3.0, Color32::WHITE));
+                p.line(pts, Stroke::new(sw(*width) * 3.0, Color32::WHITE));
             }
         }
         DrawEl::Line { color, width, x0, y0, x1, y1 } => {
-            p.line_segment(
-                [Pos2::new(*x0 as f32, *y0 as f32), Pos2::new(*x1 as f32, *y1 as f32)],
-                stroke_of(color, *width),
-            );
+            p.line_segment([map([*x0, *y0]), map([*x1, *y1])], Stroke::new(sw(*width), color_of(color)));
         }
         DrawEl::Rect { color, width, x0, y0, x1, y1 } => {
             p.rect_stroke(
-                Rect::from_two_pos(Pos2::new(*x0 as f32, *y0 as f32), Pos2::new(*x1 as f32, *y1 as f32)),
+                Rect::from_two_pos(map([*x0, *y0]), map([*x1, *y1])),
                 CornerRadius::ZERO,
-                stroke_of(color, *width),
+                Stroke::new(sw(*width), color_of(color)),
                 StrokeKind::Inside,
             );
         }
         DrawEl::Ellipse { color, width, x0, y0, x1, y1 } => {
-            let r = Rect::from_two_pos(Pos2::new(*x0 as f32, *y0 as f32), Pos2::new(*x1 as f32, *y1 as f32));
+            let r = Rect::from_two_pos(map([*x0, *y0]), map([*x1, *y1]));
             p.add(egui::Shape::Ellipse(egui::epaint::EllipseShape {
                 center: r.center(),
                 radius: Vec2::new(r.width() / 2.0, r.height() / 2.0),
                 fill: Color32::TRANSPARENT,
-                stroke: stroke_of(color, *width),
+                stroke: Stroke::new(sw(*width), color_of(color)),
             }));
         }
         DrawEl::Text { color, x, y, font_size, text } => {
             p.text(
-                Pos2::new(*x as f32, *y as f32),
+                map([*x, *y]),
                 Align2::LEFT_TOP,
                 text,
-                egui::FontId::proportional(*font_size as f32),
+                egui::FontId::proportional(*font_size as f32 * scale),
                 color_of(color),
             );
         }
@@ -534,12 +530,13 @@ impl UrlnoteApp {
             };
             let to_screen = |q: [f64; 2]| Pos2::new(origin.x + q[0] as f32 * scale, origin.y + q[1] as f32 * scale);
 
-            // 回放已完成元素
+            // 回放已完成元素(裁剪到画布内,并按 origin/scale 映射)
+            let cp = painter.with_clip_rect(canvas);
             for el in &ed.elements {
-                paint_el(&painter, el);
+                paint_el(&cp, el, origin, scale);
             }
             if let Some(ip) = &ed.in_progress {
-                paint_el(&painter, ip);
+                paint_el(&cp, ip, origin, scale);
             }
             let _ = to_screen;
 
