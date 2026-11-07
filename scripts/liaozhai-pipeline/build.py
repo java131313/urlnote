@@ -141,8 +141,19 @@ MOTIFS.update({
  "deer": s_path("M130 150 q-10 -30 20 -44 q24 -12 44 4 q20 16 8 40 l-6 14 l-60 0z", 2.4) + f'<circle cx="166" cy="118" r="2.4" fill="{INK}"/>' + s_path("M150 108 l-10 -18 M172 106 l8 -18", 2.4, INK),
 })
 
+
+MOTIFS.update({
+ "mountain": s_path("M60 172 L120 92 L160 132 L200 76 L260 172", 2.6) + s_path("M110 104 L130 104 M190 88 L210 88", 1.6, "#7a86a8"),
+ "star": f'<path d="M160 84 l8 20 l22 2 l-16 15 l5 22 l-19 -11 l-19 11 l5 -22 l-16 -15 l22 -2z" fill="{GOLD}" stroke="{INK}" stroke-width="1.4"/>',
+})
+
+
+MOTIFS.update({
+ "wolf": s_path("M116 150 q-8 -28 18 -40 q22 -10 40 4 q16 12 10 36 l-4 12 l-56 0z", 2.4) + f'<path d="M140 112 l-12 -20 l22 8z M172 112 l12 -20 l-22 8z" fill="{INK}"/>' + f'<circle cx="150" cy="130" r="2.4" fill="{INK}"/><circle cx="172" cy="130" r="2.4" fill="{INK}"/>' + s_path("M186 142 q12 2 16 -6", 2, ACC),
+})
+
 data = {}
-for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'aa', 'ab', 'ac', 'ad']:
+for f in ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', 'aa', 'ab', 'ac', 'ad', 'ae', 'af', 'ag', 'ah', 'ai', 'aj']:
     data.update(json.load(open(f'/tmp/lz_data/{f}.json')))
 texts = json.load(open('/tmp/liaozhai_2_40.json'))
 texts.update(json.load(open('/tmp/liaozhai_41_60.json')))
@@ -153,6 +164,8 @@ texts.update(json.load(open('/tmp/liaozhai_121_140.json')))
 texts.update(json.load(open('/tmp/liaozhai_141_160.json')))
 texts.update(json.load(open('/tmp/liaozhai_161_180.json')))
 texts.update(json.load(open('/tmp/liaozhai_181_200.json')))
+texts.update(json.load(open('/tmp/liaozhai_201_220.json')))
+texts.update(json.load(open('/tmp/liaozhai_221_240.json')))
 sid2key = {sid: f"{i+2:03d}" for i, sid in enumerate(texts.keys())}
 titles = json.load(open('/tmp/lzbuild/titles.json'))
 
