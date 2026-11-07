@@ -5,6 +5,7 @@
 //! wasm-bindgen (see vditor.rs).
 
 mod comment;
+mod draw;
 mod oss;
 mod suggest;
 mod vditor;
@@ -153,7 +154,7 @@ fn evt_input_value(e: &web_sys::Event) -> String {
         .unwrap_or_default()
 }
 
-fn new_id() -> String {
+pub(crate) fn new_id() -> String {
     const ALPHABET: &[u8; 62] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
     let mut v = [0u8; 5];
     window()
@@ -189,7 +190,7 @@ pub(crate) const BASE_PATH: &str = match option_env!("BASE_PATH") {
     None => "",
 };
 
-fn api_url(path: &str) -> String {
+pub(crate) fn api_url(path: &str) -> String {
     if API_BASE.is_empty() {
         path.to_string()
     } else {
@@ -2340,6 +2341,9 @@ fn App() -> impl IntoView {
     // (both sides link to each other; note ids never contain non-alphanumerics
     // so "oss" can never collide with a real note id). 文档库也要登录:
     // OssGate 先 whoami,未登录给登录表单(同便签页一道门)
+    if first_path_segment() == "draw" {
+        return view! { <draw::DrawGate/> }.into_any();
+    }
     if first_path_segment() == "oss" {
         return view! { <oss::OssGate/> }.into_any();
     }
@@ -2984,6 +2988,9 @@ fn MainView(ctx: Ctx, editor_style: impl Fn() -> String + Copy + Send + 'static)
             </a>
             <a href=format!("{BASE_PATH}/oss") title="对象存储文件库">
                 "🗂 文件库"
+            </a>
+            <a href=format!("{BASE_PATH}/draw") title="画图">
+                "🎨 画图"
             </a>
             <input
                 class="title-input"

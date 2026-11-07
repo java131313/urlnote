@@ -1661,6 +1661,7 @@ pub fn OssView() -> impl IntoView {
         <div class="oss-page">
             <div class="oss-top">
                 <a class="oss-home" href=format!("{BASE_PATH}/") title="返回便签页面">"📝 便签"</a>
+                <a class="oss-home" href=format!("{BASE_PATH}/draw") title="画图">"🎨 画图"</a>
                 <span class="oss-brand">"🗂 文件库"</span>
                 <span class="oss-spacer"></span>
                 <button type="button" class="tool" on:click=move |_| refresh_tree() title="重新加载目录">

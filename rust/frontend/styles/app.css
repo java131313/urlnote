@@ -1694,3 +1694,18 @@ header a:hover {
   background: rgba(255, 255, 255, 0.15); overflow: hidden;
 }
 .media-progress-bar { height: 100%; background: #4c8dff; transition: width 0.2s ease; }
+
+/* ---- 画图(与 react 版同款) ---- */
+.draw-gallery { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
+.draw-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid #d4d4d8; border-radius: 8px; }
+.draw-card-name { flex: 1; font-size: 15px; text-decoration: none; color: inherit; }
+.draw-card-time { color: #9ca3af; font-size: 12px; }
+.draw-status { color: #9ca3af; font-size: 13px; }
+.draw-tools { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid #e5e7eb; flex-wrap: wrap; }
+.draw-tools button { cursor: pointer; }
+.draw-tools .tool-active { background: #c7d2fe; border-radius: 6px; }
+.draw-sep { width: 1px; height: 22px; background: #d4d4d8; margin: 0 4px; }
+.draw-color { width: 22px; height: 22px; border-radius: 4px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.draw-color.color-active { border-color: #4f46e5; }
+.draw-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: #e5e7eb; }
+.draw-canvas { background: #fff; border: 1px solid #d4d4d8; box-shadow: 0 2px 10px rgba(0,0,0,.08); max-width: 100%; max-height: 100%; cursor: crosshair; touch-action: none; }
