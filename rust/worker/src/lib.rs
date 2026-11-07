@@ -16,6 +16,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use worker::*;
 
 mod analyze;
+mod draw;
 mod mark;
 mod media;
 mod token;
@@ -142,6 +143,14 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             save_note(req, &env, id).await // POST kept for API compatibility (was sendBeacon)
         }
         (Method::Get, ["api", "notes"]) => list_notes(&req, &env).await,
+        (Method::Get, ["api", "drawings"]) => draw::list_drawings(&req, &env).await,
+        (Method::Get, ["api", "drawing", id]) => draw::get_drawing(&req, &env, id).await,
+        (Method::Put, ["api", "drawing", id]) | (Method::Post, ["api", "drawing", id]) => {
+            draw::save_drawing(req, &env, id).await
+        }
+        (Method::Post, ["api", "drawing", id, "delete"]) => {
+            draw::delete_drawing(&req, &env, id).await
+        }
         (Method::Get, ["api", "media", "stream", rest @ ..]) => {
             media::stream_media(&req, &env, &media::decode_key(rest)).await
         }

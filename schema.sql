@@ -125,3 +125,16 @@ INSERT OR IGNORE INTO dict_lang (code, name, badge, ord) VALUES
 	('zh_tw', '繁體中文', '繁', 2),
 	('ja',    '日本語',   '日', 3),
 	('en',    'English',  '英', 4);
+
+CREATE TABLE IF NOT EXISTS drawings (
+	id         TEXT PRIMARY KEY,
+	name       TEXT NOT NULL DEFAULT '',
+	width      INTEGER NOT NULL DEFAULT 960,
+	height     INTEGER NOT NULL DEFAULT 600,
+	elements   TEXT NOT NULL DEFAULT '[]',
+	author     TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL DEFAULT (datetime('now')),
+	updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_drawings_updated ON drawings(updated_at DESC);
