@@ -1415,22 +1415,32 @@ impl UrlnoteApp {
             ui.separator();
             if !editor_for_this {
                 // markdown 简易编辑(Vditor 不可用时的退路)
+                // 必须包 ScrollArea:TextEdit 自身不限制高度,
+                // 不包的话内容超出面板后被裁掉,表现就是"无法向下滚动"。
                 let size = ed.note.font_size.max(MIN_FONT_SIZE) as f32;
                 let mut content = std::mem::take(&mut ed.note.content);
-                let output = TextEdit::multiline(&mut content)
-                    .font(FontId::monospace(size))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(30)
-                    .lock_focus(true)
-                    .show(ui);
+                let mut output_holder: Option<egui::text_edit::TextEditOutput> = None;
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let output = TextEdit::multiline(&mut content)
+                            .font(FontId::monospace(size))
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(24)
+                            .lock_focus(true)
+                            .show(ui);
+                        output_holder = Some(output);
+                    });
                 ed.note.content = content;
-                if output.response.changed() {
-                    ed.mark_edit();
-                }
-                if let Some(range) = output.cursor_range {
-                    let idx = range.primary.ccursor.index.min(ed.note.content.len());
-                    if idx != self.cursor_index {
-                        self.cursor_index = idx;
+                if let Some(output) = output_holder {
+                    if output.response.changed() {
+                        ed.mark_edit();
+                    }
+                    if let Some(range) = output.cursor_range {
+                        let idx = range.primary.ccursor.index.min(ed.note.content.len());
+                        if idx != self.cursor_index {
+                            self.cursor_index = idx;
+                        }
                     }
                 }
             }
@@ -1607,13 +1617,19 @@ impl UrlnoteApp {
                 ui.separator();
                 let size = f.font_size as f32;
                 let mut content = std::mem::take(&mut f.content);
-                let resp = TextEdit::multiline(&mut content)
-                    .font(FontId::monospace(size))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(30)
-                    .show(ui);
+                let mut changed = false;
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let resp = TextEdit::multiline(&mut content)
+                            .font(FontId::monospace(size))
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(24)
+                            .show(ui);
+                        changed = resp.response.changed();
+                    });
                 f.content = content;
-                if resp.response.changed() {
+                if changed {
                     f.mark_edit();
                 }
             } else {
