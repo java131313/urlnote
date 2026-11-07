@@ -852,6 +852,7 @@ function OssPage() {
       <div className="oss-body">
         <aside className="oss-side">
           <div className="oss-tools">
+            <a className="tool" href="#/draw" title="画图">🎨 画图</a>
             <button type="button" className="tool" onClick={() => createIn('', false)} title="在根目录新建 Markdown 文件">
               ＋ 文件
             </button>

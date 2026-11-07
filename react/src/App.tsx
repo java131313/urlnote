@@ -4,6 +4,7 @@ import { Editor } from './Editor';
 import { Login } from './Login';
 import { Picker } from './Picker';
 import { OssRoute } from './oss/OssPage';
+import { DrawRoute } from './DrawPage';
 
 function noteIdFromHash(): string {
   const h = location.hash.replace(/^#\/?/, '');
@@ -15,11 +16,17 @@ function isOssHash(): boolean {
   return location.hash.replace(/^#\/?/, '') === 'oss';
 }
 
+/// 画图:#/draw(画廊)或 #/draw/{id}(画布)
+function isDrawHash(): boolean {
+  return location.hash.replace(/^#\/?/, '').startsWith('draw');
+}
+
 export default function App() {
   const [user, setUser] = useState<string | null | undefined>(undefined);
   const [noteId, setNoteId] = useState(noteIdFromHash);
   const [dirty, setDirty] = useState(false);
   const [oss, setOss] = useState(isOssHash);
+  const [draw, setDraw] = useState(isDrawHash);
 
   useEffect(() => {
     api
@@ -31,6 +38,7 @@ export default function App() {
   useEffect(() => {
     const onHash = () => {
       setOss(isOssHash());
+      setDraw(isDrawHash());
       setNoteId(noteIdFromHash());
     };
     window.addEventListener('hashchange', onHash);
@@ -47,6 +55,7 @@ export default function App() {
   if (user === undefined) return <div className="boot">加载中…</div>;
   if (user === null) return <Login onOk={() => setUser('')} />;
   if (oss) return <OssRoute />;
+  if (draw) return <DrawRoute />;
 
   return (
     <div className="app">
@@ -58,6 +67,9 @@ export default function App() {
         </button>
         <a className="tool oss-link" href="#/oss" title="对象存储文件库">
           🗂 文件库
+        </a>
+        <a className="tool draw-link" href="#/draw" title="画图">
+          🎨 画图
         </a>
         <span className="spacer" />
         {dirty && <span className="dirty-dot">● 未保存</span>}

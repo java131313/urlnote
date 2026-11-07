@@ -346,3 +346,18 @@ a.tool { text-decoration: none; display: inline-block; }
 .svg-pane { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 8px 16px 16px; }
 .svg-src { flex: 1; min-width: 0; resize: none; font-family: ui-monospace, Menlo, monospace; font-size: 13px; line-height: 1.5; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 6px; padding: 8px; background: var(--oss-bg, #fff); color: inherit; }
 .svg-view { flex: 1; min-width: 0; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 6px; background: #fff; }
+
+/* ---- 画图 ---- */
+.draw-link { text-decoration: none; }
+.draw-gallery { padding: 16px 20px; display: flex; flex-direction: column; gap: 8px; }
+.draw-card { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 8px; }
+.draw-card-name { flex: 1; font-size: 15px; text-decoration: none; color: inherit; }
+.draw-card-time { color: #9ca3af; font-size: 12px; }
+.draw-tools { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--oss-border, #e5e7eb); flex-wrap: wrap; }
+.draw-tools .tool.active { background: #c7d2fe; border-radius: 6px; }
+.draw-sep { width: 1px; height: 22px; background: var(--oss-border, #d4d4d8); margin: 0 4px; }
+.draw-color { width: 22px; height: 22px; border-radius: 4px; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.draw-color.active { border-color: #4f46e5; }
+.draw-name { width: 180px; padding: 4px 8px; border: 1px solid var(--oss-border, #d4d4d8); border-radius: 6px; background: transparent; color: inherit; }
+.draw-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: #e5e7eb; }
+.draw-canvas { background: #fff; border: 1px solid #d4d4d8; box-shadow: 0 2px 10px rgba(0,0,0,.08); max-width: 100%; max-height: 100%; cursor: crosshair; touch-action: none; }

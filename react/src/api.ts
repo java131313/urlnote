@@ -142,7 +142,27 @@ export const api = {
 
   // ONLYOFFICE 在线编辑:换 DocsAPI 配置(token 有过期,用完即弃)
   officeConfig: (key: string) => req<OfficeEditorCfg>(`/api/office/config?key=${encodeURIComponent(key)}`),
+
+  // ---- 画图(画板) ----
+  drawings: () => req<{ drawings: DrawingMeta[] }>('/api/drawings'),
+  drawing: (id: string) => req<DrawingDoc>(`/api/drawing/${id}`),
+  saveDrawing: (id: string, body: { name: string; width: number; height: number; elements: unknown[] }) =>
+    req<DrawingDoc>(`/api/drawing/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteDrawing: (id: string) => req<{ ok: boolean }>(`/api/drawing/${id}/delete`, { method: 'POST' }),
 };
+
+export interface DrawingMeta {
+  id: string;
+  name: string;
+  updated_at: string;
+}
+
+export interface DrawingDoc extends DrawingMeta {
+  width: number;
+  height: number;
+  elements: unknown[];
+  author?: string;
+}
 
 export function newNoteId(): string {
   const alphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';

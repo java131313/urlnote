@@ -5,6 +5,7 @@
 
 mod analyze;
 mod comments;
+mod draw;
 mod auth;
 mod db;
 mod dict;
@@ -181,6 +182,9 @@ fn api_router(st: AppState) -> Router {
             axum::routing::delete(comments::delete_note_comment),
         )
         .route("/api/comments/{id}", axum::routing::delete(comments::delete_comment))
+        .route("/api/drawings", get(draw::list_drawings))
+        .route("/api/drawing/{id}", get(draw::get_drawing).put(draw::save_drawing))
+        .route("/api/drawing/{id}/delete", axum::routing::post(draw::delete_drawing))
         .route("/api/dict/lookup", get(dict::dict_lookup))
         .route("/api/dict/langs", get(dict::dict_langs).post(dict::create_lang))
         .route("/api/dict/words", get(dict::list_words).post(dict::create_word))
