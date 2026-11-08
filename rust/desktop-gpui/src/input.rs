@@ -450,9 +450,8 @@ impl TextField {
         (s, e)
     }
 
-    fn word_bounds_at(&self, pos: usize) -> (usize, usize) {
-        let g = self.inner.lock().unwrap();
-        let text = &g.text;
+    /// 词边界(纯函数;持锁时也可安全调用,不再自行加锁)。
+    fn word_bounds(text: &str, pos: usize) -> (usize, usize) {
         if text.is_empty() {
             return (0, 0);
         }
@@ -486,6 +485,17 @@ impl TextField {
         let shift = m.shift;
         let cmd = m.platform;
         let key = keystroke.key.as_str();
+
+        // 密码框不走 IME/secure-input(避免 TSM 卡死):可打印字符直接落盘
+        if self.password && !cmd {
+            if let Some(ch) = keystroke.key_char.clone() {
+                if !ch.is_empty() && !ch.chars().any(|c| c.is_control()) {
+                    self.insert_at_cursor(&ch);
+                    cx.notify();
+                    return;
+                }
+            }
+        }
 
         match key {
             "enter" => {
@@ -579,7 +589,7 @@ impl TextField {
             "left" => {
                 let cur = self.inner.lock().unwrap().cursor;
                 let target = if m.alt {
-                    let (s, _) = self.word_bounds_at(cur);
+                    let (s, _) = Self::word_bounds(&self.inner.lock().unwrap().text, cur);
                     if s == cur {
                         prev_char(&self.inner.lock().unwrap().text, cur).unwrap_or(0)
                     } else {
@@ -595,7 +605,7 @@ impl TextField {
                 let cur = self.inner.lock().unwrap().cursor;
                 let text = self.inner.lock().unwrap().text.clone();
                 let target = if m.alt {
-                    let (_, e) = self.word_bounds_at(cur);
+                    let (_, e) = Self::word_bounds(&self.inner.lock().unwrap().text, cur);
                     if e == cur {
                         next_char(&text, cur).unwrap_or(text.len())
                     } else {
@@ -850,7 +860,7 @@ impl Render for TextField {
                         {
                             let mut g = field.inner.lock().unwrap();
                             if event.click_count >= 2 {
-                                let (s, e) = field.word_bounds_at(hit);
+                                let (s, e) = Self::word_bounds(&g.text, hit);
                                 g.anchor = s;
                                 g.cursor = e;
                             } else {
@@ -1151,13 +1161,15 @@ impl Render for TextField {
                             }
                         }
 
-                        // IME 输入处理
+                        // IME 输入处理(密码框不注册,走 key_char 直录)
                         let _ = bounds;
-                        window.handle_input(
-                            &focus,
-                            ElementInputHandler::new(geom.bounds, entity.clone()),
-                            cx,
-                        );
+                        if !password {
+                            window.handle_input(
+                                &focus,
+                                ElementInputHandler::new(geom.bounds, entity.clone()),
+                                cx,
+                            );
+                        }
                     },
                 ),
             );
