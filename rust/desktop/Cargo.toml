@@ -5,7 +5,7 @@ edition = "2021"
 description = "urlnote macOS 原生桌面版(eframe/egui + reqwest 直连后端;markdown 正文经 loopback 桥走独立 wry 窗口的 Vditor)"
 
 [[bin]]
-name = "urlnote-desktop"
+name = "urlnote-desktop-egui"
 path = "src/main.rs"
 
 [[bin]]

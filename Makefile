@@ -65,7 +65,7 @@ init-db-local:
 clean:
 	rm -rf build rust/target rust/worker/build rust/frontend/dist rust/frontend/node_modules rust/frontend/static/vditor rust/frontend/static/mammoth rust/frontend/static/turndown rust/frontend/static/pdfjs frontend/node_modules frontend/dist
 
-# ---- 原生桌面版(rust/desktop,eframe;markdown 正文走独立 wry 窗口的 Vditor) ----
+# ---- 原生桌面版(rust/desktop-gpui,GPUI;egui 版见 urlnote-desktop-egui) ----
 ## 准备 Vditor 运行时资源(从 react 的 node_modules 拷入,gitignore)
 desktop-stage:
 	mkdir -p rust/desktop/assets
@@ -73,11 +73,14 @@ desktop-stage:
 
 ## 运行(先确保 desktop-stage 已执行过一次)
 desktop: desktop-stage
-	cd rust && cargo build --release -p urlnote-desktop && ./target/release/urlnote-desktop
+	cd rust && cargo build --release -p urlnote-desktop-gpui && ./target/release/urlnote-desktop
+
+desktop-egui: desktop-stage
+	cd rust && cargo build --release -p urlnote-desktop && ./target/release/urlnote-desktop-egui
 
 ## 编译并安装到 /Applications/urlnote-native.app(含编辑器子进程与 Vditor 资源)
 desktop-install: desktop-stage
-	cd rust && cargo build --release -p urlnote-desktop
+	cd rust && cargo build --release -p urlnote-desktop-gpui
 	mkdir -p /Applications/urlnote.app/Contents/MacOS /Applications/urlnote.app/Contents/Resources
 	cp rust/target/release/urlnote-desktop /Applications/urlnote.app/Contents/MacOS/
 	rm -rf /Applications/urlnote.app/Contents/Resources/assets
