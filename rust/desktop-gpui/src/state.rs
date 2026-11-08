@@ -345,8 +345,10 @@ impl AppState {
                 self.busy = false;
                 if res.is_ok() {
                     self.enter_main();
-                } else if std::env::var("GPUI_AUTO_OSS").is_ok() {
-                    // 本地自检:自动登录本地 server 并进入文件库
+                } else if std::env::var("GPUI_AUTO_OSS").is_ok()
+                    || std::env::var("GPUI_AUTO_NOTES").is_ok()
+                {
+                    // 本地自检:自动登录本地 server
                     eprintln!("[auto] whoami failed, auto-login local server");
                     self.api_base = "http://localhost:8080".into();
                     self.do_login("admin".into(), "root@123".into());
@@ -361,6 +363,8 @@ impl AppState {
                         if std::env::var("GPUI_AUTO_OSS").is_ok() {
                             eprintln!("[auto] login ok, enter oss");
                             self.enter_oss();
+                        } else if std::env::var("GPUI_AUTO_NOTES").is_ok() {
+                            eprintln!("[auto] login ok, stay on notes");
                         }
                     }
                     Err(e) => self.login_err = e,

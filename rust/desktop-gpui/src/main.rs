@@ -41,6 +41,7 @@ pub struct RootView {
     rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Msg>>>,
     /// 用户活动标志:输入框 observer / 画布操作置位,pump 据此跑 tick
     need_tick: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    auto_focused: bool,
 }
 
 impl RootView {
@@ -466,6 +467,7 @@ impl RootView {
             name_input,
             rx,
             need_tick,
+            auto_focused: false,
         }
     }
 
@@ -688,7 +690,7 @@ impl RootView {
         let state = self.state.clone();
         let current_id = st.current.as_ref().map(|e| e.note.id.clone());
 
-        // 列表(uniform_list 自带滚动)
+        // 列表(普通 div 列;uniform_list 在活动视图会触帧循环,弃用)
         let notes_data: Vec<(String, String, String, bool)> = st
             .notes
             .iter()
@@ -705,38 +707,30 @@ impl RootView {
             })
             .collect();
         let st_list = state.clone();
-        let list = gpui::uniform_list(
-            SharedString::from("notes-list"),
-            notes_data.len(),
-            move |range, _window, _cx| {
-                let mut rows: Vec<AnyElement> = Vec::new();
-                for i in range {
-                    let (id, title, time, selected) = notes_data[i].clone();
-                    let st_e = st_list.clone();
-                    rows.push(
-                        div()
-                            .id(SharedString::from(format!("note-{id}")))
-                            .px_2()
-                            .py_2()
-                            .mx_1()
-                            .rounded_md()
-                            .cursor(gpui::CursorStyle::PointingHand)
-                            .when(selected, |d| d.bg(rgb(0xe0e7ff)))
-                            .when(!selected, |d| d.hover(|s| s.bg(rgb(0xf4f4f5))))
-                            .child(div().text_sm().text_color(rgb(0x27272a)).child(title))
-                            .child(div().text_xs().text_color(rgb(0xa1a1aa)).child(time))
-                            .on_click(move |_e, _w, cx| {
-                                st_e.update(cx, |st, cx| {
-                                    st.load_note(&id);
-                                    cx.notify();
-                                });
-                            })
-                            .into_any_element(),
-                    );
-                }
-                rows
-            },
-        );
+        let mut rows: Vec<AnyElement> = Vec::new();
+        for (id, title, time, selected) in notes_data {
+            let st_e = st_list.clone();
+            rows.push(
+                div()
+                    .id(SharedString::from(format!("note-{id}")))
+                    .px_2()
+                    .py_2()
+                    .mx_1()
+                    .rounded_md()
+                    .cursor(gpui::CursorStyle::PointingHand)
+                    .when(selected, |d| d.bg(rgb(0xe0e7ff)))
+                    .when(!selected, |d| d.hover(|s| s.bg(rgb(0xf4f4f5))))
+                    .child(div().text_sm().text_color(rgb(0x27272a)).child(title))
+                    .child(div().text_xs().text_color(rgb(0xa1a1aa)).child(time))
+                    .on_click(move |_e, _w, cx| {
+                        st_e.update(cx, |st, cx| {
+                            st.load_note(&id);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element(),
+            );
+        }
 
         let sidebar = div()
             .w(px(250.0))
@@ -745,6 +739,7 @@ impl RootView {
             .border_color(rgb(0xe4e4e7))
             .bg(rgb(0xfbfcfe))
             .py_1()
+            .overflow_hidden()
             .child(
                 div()
                     .px_2()
@@ -753,7 +748,7 @@ impl RootView {
                     .text_color(rgb(0x16a34a))
                     .child(format!("[dbg] notes={}", st.notes.len())),
             )
-            .child(list);
+            .children(rows);
 
         // 编辑器区
         let ed_snap = st.current.as_ref().map(|ed| {
@@ -1191,13 +1186,11 @@ impl RootView {
             }
         }
         let st_list = state.clone();
-        let list = gpui::uniform_list(
-            SharedString::from("oss-list"),
-            items.len(),
-            move |range, _window, _cx| {
-                let mut rows: Vec<AnyElement> = Vec::new();
-                for i in range {
-                    match &items[i] {
+        let items_ref = &items;
+        let mut rows: Vec<AnyElement> = Vec::new();
+        {
+                for i in 0..items_ref.len() {
+                    match &items_ref[i] {
                         OssItem::Msg(text, is_err) => rows.push(
                             div()
                                 .px_3()
@@ -1324,11 +1317,7 @@ impl RootView {
                         }
                     }
                 }
-                rows
-            },
-        )
-        .flex_1()
-        .min_h(px(0.0));
+        }
 
         let sidebar = div()
             .w(px(280.0))
@@ -1349,7 +1338,7 @@ impl RootView {
                         st.oss.files.len()
                     )),
             )
-            .child(list);
+            .children(rows);
 
         // 右:编辑器
         let cur_key = cur_file.map(|(k, ..)| k);
@@ -1479,20 +1468,23 @@ impl RootView {
             );
         }
 
+        // 二分实验:GPUI_OSS_PART=1 仅顶栏 / =2 顶栏+侧栏 / =3 完整
+        let part: u32 = std::env::var("GPUI_OSS_PART")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+        let body_row = match part {
+            1 => div().flex_1().min_h(px(0.0)).flex().child(editor_col),
+            2 => div().flex_1().min_h(px(0.0)).flex().child(editor_col).child(sidebar),
+            _ => div().flex_1().min_h(px(0.0)).flex().child(sidebar).child(editor_col),
+        };
         div()
             .flex_1()
             .min_h(px(0.0))
             .flex()
             .flex_col()
             .child(oss_bar_final)
-            .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .flex()
-                    .child(sidebar)
-                    .child(editor_col),
-            )
+            .child(body_row)
             .into_any_element()
     }
 
@@ -1550,12 +1542,10 @@ impl RootView {
             let empty = rows_data.is_empty() && !st.draw.loading;
             let st_rows = state.clone();
             let name_rows = self.name_input.clone();
-            let list = gpui::uniform_list(
-                SharedString::from("draw-list"),
-                rows_data.len() + if empty { 1 } else { 0 },
-                move |range, _window, _cx| {
-                    let mut out: Vec<AnyElement> = Vec::new();
-                    for i in range {
+            let total = rows_data.len() + if empty { 1 } else { 0 };
+            let mut out: Vec<AnyElement> = Vec::new();
+            {
+                    for i in 0..total {
                         if i >= rows_data.len() {
                             out.push(
                                 div()
@@ -1623,11 +1613,7 @@ impl RootView {
                                 .into_any_element(),
                         );
                     }
-                    out
-                },
-            )
-            .flex_1()
-            .min_h(px(0.0));
+            }
             return div()
                 .flex_1()
                 .flex()
@@ -1643,7 +1629,16 @@ impl RootView {
                         .border_color(rgb(0xe4e4e7))
                         .children(buttons),
                 )
-                .child(div().flex_1().py_1().child(list))
+                .child(
+                    div()
+                        .flex_1()
+                        .py_1()
+                        .overflow_hidden()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(out),
+                )
                 .into_any_element();
         }
 
@@ -2154,7 +2149,13 @@ impl RootView {
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<RootView>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<RootView>) -> impl IntoElement {
+        // 实验:自动聚焦服务器输入框(GPUI_AUTO_FOCUS=1),测聚焦态 IME churn
+        if std::env::var("GPUI_AUTO_FOCUS").is_ok() && !self.auto_focused {
+            self.auto_focused = true;
+            let fh = self.server_input.read(cx).focus_handle();
+            fh.focus(window);
+        }
         let screen = self.state.read(cx).screen;
         match screen {
             Screen::Login => {

@@ -1159,9 +1159,12 @@ impl Render for TextField {
                             }
                         }
 
-                        // IME 输入处理(密码框不注册,走 key_char 直录)
+                        // IME 输入处理:仅聚焦且非密码时注册。
+                        // 无条件注册会让 macOS TSM 周期性回 ping(系统日志里
+                        // IMKCFRunLoopWakeUpReliable 报错),造成 ~3Hz 持续重绘。
                         let _ = bounds;
-                        if !password {
+                        let focused_now = focus.is_focused(window);
+                        if !password && focused_now {
                             window.handle_input(
                                 &focus,
                                 ElementInputHandler::new(geom.bounds, entity.clone()),
