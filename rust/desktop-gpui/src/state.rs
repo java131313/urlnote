@@ -89,6 +89,8 @@ pub fn is_word_char(c: char) -> bool {
 }
 
 pub enum Msg {
+    /// 原生密码框回车 → 请求登录(由 pump 在 GPUI 上下文里读输入框并提交)。
+    TryLogin,
     Whoami(Result<String, String>),
     Login(Result<(), String>),
     Notes(Result<Vec<NoteMeta>, String>),
@@ -341,6 +343,8 @@ impl AppState {
 
     pub fn apply(&mut self, m: Msg) {
         match m {
+            // 由 pump 在状态外处理(要读输入框实体),这里兜底忽略
+            Msg::TryLogin => {}
             Msg::Whoami(res) => {
                 self.busy = false;
                 if res.is_ok() {
@@ -373,7 +377,17 @@ impl AppState {
             Msg::Notes(res) => {
                 self.notes_loading = false;
                 match res {
-                    Ok(n) => self.notes = n,
+                    Ok(n) => {
+                        self.notes = n;
+                        // 自检:GPUI_AUTO_EDITOR=1 自动打开第一篇的内嵌编辑器(webview 链路)
+                        #[cfg(target_os = "macos")]
+                        if std::env::var("GPUI_AUTO_EDITOR").is_ok() && self.current.is_none() {
+                            if let Some(first) = self.notes.first() {
+                                let id = first.id.clone();
+                                self.load_note(&id);
+                            }
+                        }
+                    }
                     Err(e) => self.status = e,
                 }
             }
@@ -388,6 +402,12 @@ impl AppState {
                         let content = n.content.clone();
                         let fs = n.font_size;
                         self.current = Some(EdNote::loaded(n));
+                        // 自检:GPUI_AUTO_EDITOR=1 内嵌编辑器链路
+                        #[cfg(target_os = "macos")]
+                        if std::env::var("GPUI_AUTO_EDITOR").is_ok() && self.editor.open_id.is_empty()
+                        {
+                            self.open_vditor(id.clone(), title.clone(), content.clone());
+                        }
                         self.pending_note_sync = Some((id, title, tags, content, fs));
                     }
                     Err(e) => self.status = e,
@@ -884,17 +904,28 @@ impl AppState {
             "http://127.0.0.1:{}/editor/page?id={}&token={}",
             self.editor.port, id, self.editor.token
         );
-        match std::process::Command::new("open").arg(&url).spawn() {
-            Ok(_) => {
-                self.editor.open_id = id;
-                self.status = "已在浏览器中打开 Vditor 编辑器".into();
+        // 内嵌 WKWebView(窗口内编辑);失败或显式 GPUI_EDITOR_BROWSER=1 时退回系统浏览器
+        #[cfg(target_os = "macos")]
+        let in_app = std::env::var("GPUI_EDITOR_BROWSER").is_err() && crate::webview::load(&url);
+        #[cfg(not(target_os = "macos"))]
+        let in_app = false;
+        if in_app {
+            self.editor.open_id = id;
+            self.status = "已在窗口内打开 Vditor 编辑器".into();
+        } else {
+            match std::process::Command::new("open").arg(&url).spawn() {
+                Ok(_) => {
+                    self.editor.open_id = id;
+                    self.status = "已在浏览器中打开 Vditor 编辑器".into();
+                }
+                Err(e) => self.status = format!("打开浏览器失败:{e}"),
             }
-            Err(e) => self.status = format!("打开浏览器失败:{e}"),
         }
     }
 
     pub fn close_editor(&mut self) {
         self.editor.open_id.clear();
+        crate::webview::close_pane();
     }
 
     /// 是否有未完成的防抖/自动保存工作(pump 据此决定是否继续.tick)。

@@ -25,3 +25,9 @@ sha2 = "0.10"
 quick-xml = "0.37"
 tiny_http = "0.12"
 shared = { path = "../shared" }
+
+# 登录框原生输入(NSTextField 内嵌;版本与 gpui 0.2.2 的 mac 后端锁定一致)
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "=0.26.0"
+objc = "0.2"
+raw-window-handle = "0.6"

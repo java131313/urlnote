@@ -83,6 +83,9 @@ fn handle(
             .with_header(Header::from_bytes(&b"Access-Control-Allow-Methods"[..], &b"*"[..]).unwrap())
     };
     let url = req.url().to_string();
+    if std::env::var("GPUI_BRIDGE_LOG").is_ok() {
+        eprintln!("[bridge] {} {}", req.method(), url.split('?').next().unwrap_or(""));
+    }
     let (path, query) = url.split_once('?').unwrap_or((&url, ""));
     let q = |k: &str| -> String {
         query

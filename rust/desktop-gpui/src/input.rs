@@ -76,6 +76,18 @@ pub struct TextField {
     pub on_enter: Option<Arc<dyn Fn(&mut Window, &mut Context<TextField>) + Send + Sync>>,
     /// 方向键/Tab/Esc 等"特殊键"透传给父级(词典面板导航等)。key 为 keystroke.key。
     pub on_special: Option<Arc<dyn Fn(&str, &mut Window, &mut Context<TextField>) + Send + Sync>>,
+    /// macOS 原生模式:渲染为占位 div,输入由窗口内嵌的 NSTextField 接管(见 native.rs)。
+    #[cfg(target_os = "macos")]
+    pub native: bool,
+    /// 原生控件宿主(首帧 prepaint 惰性创建)。
+    #[cfg(target_os = "macos")]
+    pub native_host: Arc<Mutex<Option<Arc<crate::native::NativeField>>>>,
+    /// 原生创建失败后置位,永久退回自绘,保证登录框永远可用。
+    #[cfg(target_os = "macos")]
+    pub native_broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// 原生模式回车回调(回调处无 window/cx,由调用方经前台 executor 回 GPUI)。
+    #[cfg(target_os = "macos")]
+    pub on_submit: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl TextField {
@@ -104,7 +116,25 @@ impl TextField {
             placeholder: placeholder.into(),
             on_enter: None,
             on_special: None,
+            #[cfg(target_os = "macos")]
+            native: false,
+            #[cfg(target_os = "macos")]
+            native_host: Arc::new(Mutex::new(None)),
+            #[cfg(target_os = "macos")]
+            native_broken: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(target_os = "macos")]
+            on_submit: None,
         }
+    }
+
+    /// 登录框等场景改用窗口内嵌的原生输入框(仅 macOS 生效,其他平台保持自绘)。
+    #[allow(unused_mut)]
+    pub fn as_native(mut self) -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            self.native = true;
+        }
+        self
     }
 
     pub fn text(&self) -> String {
@@ -830,6 +860,77 @@ impl EntityInputHandler for TextField {
 
 impl Render for TextField {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // 原生模式:占位 div + 定位原生控件,不走自绘/键盘/IME 路径;
+        // 创建失败则永久退回自绘,登录框永远可用。
+        #[cfg(target_os = "macos")]
+        if self.native && !self.native_broken.load(std::sync::atomic::Ordering::Relaxed) {
+            return self.render_native();
+        }
+        self.render_drawn(window, cx)
+    }
+}
+
+impl TextField {
+    /// 原生模式渲染:canvas prepaint 里惰性创建/定位 AppKit 输入框,
+    /// GPUI 侧不绘制任何内容(边框/文字/光标/IME 全归原生控件)。
+    #[cfg(target_os = "macos")]
+    fn render_native(&mut self) -> gpui::Div {
+        let inner = self.inner.clone();
+        let password = self.password;
+        let host_slot = self.native_host.clone();
+        let broken = self.native_broken.clone();
+        let font_size = self.inner.lock().unwrap().font_size;
+        let placeholder = self.placeholder.clone();
+        let on_submit = self.on_submit.clone();
+
+        div()
+            .h(font_size * 1.5 + px(PAD * 2.0))
+            .child(
+                // canvas 内容尺寸默认为 0(内容型子节点按内容收缩),
+                // 必须显式拉满占位 div,否则汇报给原生控件的 bounds 高度为 0。
+                canvas(
+                move |bounds, window, app| {
+                    {
+                        let mut slot = host_slot.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = crate::native::create(
+                                window,
+                                password,
+                                font_size.into(),
+                                &placeholder,
+                                crate::native::NativeCtx {
+                                    inner: inner.clone(),
+                                    on_submit: on_submit.clone(),
+                                },
+                            );
+                            if slot.is_none() {
+                                eprintln!("[native] 原生输入框创建失败,退回自绘");
+                                broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                                app.refresh_windows();
+                                return bounds;
+                            }
+                        }
+                    }
+                    let host = host_slot.lock().unwrap().clone();
+                    if let Some(host) = host {
+                        // 持锁读文本后立即释放,再调 AppKit(setStringValue
+                        // 可能同步触发 textDidChange 回调,回调里也要拿 inner 锁)。
+                        let text = { inner.lock().unwrap().text.clone() };
+                        crate::native::push_text(&host, &text);
+                        crate::native::layout(&host, bounds, window);
+                    }
+                    bounds
+                },
+                |_bounds, _geom, _window, _app| {
+                    // 原生控件自行绘制,GPUI 侧不画内容
+                },
+                )
+                .size_full(),
+            )
+    }
+
+    /// 自绘模式渲染(原实现)。
+    fn render_drawn(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Div {
         let focused = self.focus.is_focused(window);
         let multiline = self.multiline;
         let placeholder = self.placeholder.clone();

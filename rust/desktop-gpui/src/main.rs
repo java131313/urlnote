@@ -7,8 +7,10 @@
 mod bridge;
 mod draw;
 mod input;
+mod native;
 mod s3;
 mod state;
+mod webview;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,7 +19,7 @@ use gpui::prelude::*;
 use gpui::{
     AnyElement, App, Application, Bounds, Context, Entity, IntoElement, MouseButton, Pixels,
     Point, Render, SharedString, Size, TitlebarOptions, Window, WindowBounds, WindowOptions,
-    deferred, div, hsla, point, px, rgb,
+    canvas, deferred, div, hsla, point, px, rgb,
 };
 
 use input::TextField;
@@ -50,10 +52,14 @@ impl RootView {
 
         let server_input = cx.new(|cx| {
             TextField::with_opts(cx, false, false, false, px(14.0), "https://… 或 http://localhost:8080")
+                .as_native()
         });
-        let user_input = cx.new(|cx| TextField::with_opts(cx, false, false, false, px(14.0), "用户名"));
+        let user_input = cx.new(|cx| {
+            TextField::with_opts(cx, false, false, false, px(14.0), "用户名").as_native()
+        });
         let pass_input = cx.new(|cx| {
-            let mut f = TextField::with_opts(cx, false, true, false, px(14.0), "密码");
+            let mut f =
+                TextField::with_opts(cx, false, true, false, px(14.0), "密码").as_native();
             f.placeholder = "密码".into();
             f
         });
@@ -187,6 +193,8 @@ impl RootView {
         .detach();
 
         // 密码框回车 → 登录
+        // 自绘模式:GPUI 键盘事件内直接提交。
+        #[cfg(not(target_os = "macos"))]
         {
             let state = state.clone();
             let server = server_input.clone();
@@ -202,6 +210,17 @@ impl RootView {
                         st.do_login(user_text, pass_text);
                         cx.notify();
                     });
+                }));
+            });
+        }
+        // 原生模式:AppKit delegate 回调在主线程但拿不到 GPUI 上下文,
+        // 发 Msg::TryLogin 走现有 mpsc,pump 收到后在 GPUI 上下文里提交。
+        #[cfg(target_os = "macos")]
+        {
+            let tx = state.read_with(cx, |st, _| st.tx.clone());
+            pass_input.update(cx, |f, _cx| {
+                f.on_submit = Some(Arc::new(move || {
+                    let _ = tx.send(Msg::TryLogin);
                 }));
             });
         }
@@ -351,6 +370,12 @@ impl RootView {
                             };
                             let mut still_active = false;
                             root_ent.update(cx, |root, cx| {
+                                // 原生密码框回车:AppKit 回调发 Msg::TryLogin 到这里,
+                                // 在 GPUI 上下文里读输入框并提交登录
+                                #[cfg(target_os = "macos")]
+                                if msgs.iter().any(|m| matches!(m, Msg::TryLogin)) {
+                                    root.submit_login(cx);
+                                }
                                 let search_text = search_e.read_with(cx, |f, _| f.text());
                                 let (content_text, cursor) =
                                     content_e.read_with(cx, |f, _| (f.text(), f.cursor()));
@@ -536,6 +561,38 @@ impl RootView {
     }
 
     // ---------- 登录 ----------
+
+    /// Vditor 内嵌编辑器占位区:canvas prepaint 每帧把 WKWebView
+    /// 定位到这块区域(消费 open_vditor 排入的待导航 URL)。
+    #[cfg(target_os = "macos")]
+    fn webview_pane(&self) -> gpui::Div {
+        div().h_full().child(
+            canvas(
+                |bounds, window, _app| {
+                    crate::webview::layout(bounds, window);
+                    bounds
+                },
+                |_bounds, _geom, _window, _app| {
+                    // WKWebView 自行渲染,GPUI 侧不画内容
+                },
+            )
+            .size_full(),
+        )
+    }
+
+    /// 登录提交(原生密码框回车走这里;登录按钮点击逻辑相同,见 render_login)。
+    #[cfg(target_os = "macos")]
+    fn submit_login(&mut self, cx: &mut Context<RootView>) {
+        let server_text = self.server_input.read_with(cx, |f, _| f.text());
+        let user_text = self.user_input.read_with(cx, |f, _| f.text());
+        let pass_text = self.pass_input.read_with(cx, |f, _| f.text());
+        self.state.update(cx, |st, cx| {
+            let base = normalize_base(&server_text);
+            st.api_base = if base.is_empty() { DEFAULT_API.to_string() } else { base };
+            st.do_login(user_text, pass_text);
+            cx.notify();
+        });
+    }
 
     fn render_login(&self, busy: bool, login_err: &str) -> AnyElement {
         let state = self.state.clone();
@@ -764,6 +821,11 @@ impl RootView {
         let editor_for_this =
             editor_open && current_id.as_deref() == Some(st.editor.open_id.as_str());
         let editor_other = editor_open && !editor_for_this;
+        // 内嵌 webview 只在"本文档占位区"渲染时可见;其余情况(未开/开着别的文档)隐藏
+        #[cfg(target_os = "macos")]
+        if !editor_for_this {
+            crate::webview::hide();
+        }
 
         let state_v = state.clone();
         let state_disc = state.clone();
@@ -779,7 +841,7 @@ impl RootView {
                     div()
                         .text_sm()
                         .text_color(rgb(0x16a34a))
-                        .child("✅ Vditor 编辑中(浏览器窗口,自动回写)"),
+                        .child("✅ Vditor 编辑中(窗口内,自动回写)"),
                 )
                 .child(Self::btn("✕ 断开编辑器").on_click(move |_e, _w, cx| {
                     state_disc.update(cx, |st, cx| {
@@ -905,6 +967,20 @@ impl RootView {
             );
         }
 
+        // 正文区:本文档在内嵌 Vditor 中编辑时,GPUI 输入框换成 webview 占位
+        let content_area: AnyElement = if editor_for_this {
+            #[cfg(target_os = "macos")]
+            {
+                self.webview_pane().into_any_element()
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                div().h_full().child(self.content_input.clone()).into_any_element()
+            }
+        } else {
+            div().h_full().child(self.content_input.clone()).into_any_element()
+        };
+
         editor_col = editor_col
             .child(div().mx_3().h(px(1.0)).bg(rgb(0xe4e4e7)))
             .child(
@@ -912,7 +988,7 @@ impl RootView {
                     .flex_1()
                     .min_h(px(0.0))
                     .p_3()
-                    .child(div().h_full().child(self.content_input.clone())),
+                    .child(content_area),
             );
 
         // 词典面板
@@ -1345,6 +1421,10 @@ impl RootView {
         let editor_open = !st.editor.open_id.is_empty();
         let editor_for_this = editor_open && cur_key.as_deref() == Some(st.editor.open_id.as_str());
         let editor_other = editor_open && !editor_for_this;
+        #[cfg(target_os = "macos")]
+        if !editor_for_this {
+            crate::webview::hide();
+        }
 
         let state_v = state.clone();
         let state_disc = state.clone();
@@ -1359,7 +1439,7 @@ impl RootView {
                     div()
                         .text_sm()
                         .text_color(rgb(0x16a34a))
-                        .child("✅ Vditor 编辑中(浏览器窗口,自动保存回桶)"),
+                        .child("✅ Vditor 编辑中(窗口内,自动保存回桶)"),
                 )
                 .child(Self::btn("✕ 断开编辑器").on_click(move |_e, _w, cx| {
                     state_disc.update(cx, |st, cx| {
@@ -1454,7 +1534,18 @@ impl RootView {
                     .flex_1()
                     .min_h(px(0.0))
                     .p_3()
-                    .child(div().h_full().child(self.oss_content_input.clone())),
+                    .child(if editor_for_this {
+                        #[cfg(target_os = "macos")]
+                        {
+                            self.webview_pane().into_any_element()
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            div().h_full().child(self.oss_content_input.clone()).into_any_element()
+                        }
+                    } else {
+                        div().h_full().child(self.oss_content_input.clone()).into_any_element()
+                    }),
             );
 
         if editor_for_this {
@@ -1464,7 +1555,7 @@ impl RootView {
                     .pb_2()
                     .text_xs()
                     .text_color(rgb(0x71717a))
-                    .child("正文正在 Vditor 浏览器窗口中编辑"),
+                    .child("正文正在窗口内 Vditor 中编辑"),
             );
         }
 
@@ -2150,15 +2241,26 @@ impl RootView {
 
 impl Render for RootView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<RootView>) -> impl IntoElement {
-        // 实验:自动聚焦服务器输入框(GPUI_AUTO_FOCUS=1),测聚焦态 IME churn
+        // 实验:自动聚焦服务器输入框(GPUI_AUTO_FOCUS=1),测聚焦态 IME churn。
+        // 自绘模式聚焦 GPUI 焦点句柄。
+        #[cfg(not(target_os = "macos"))]
         if std::env::var("GPUI_AUTO_FOCUS").is_ok() && !self.auto_focused {
             self.auto_focused = true;
             let fh = self.server_input.read(cx).focus_handle();
             fh.focus(window);
         }
+        // 原生登录框:聚焦窗口内嵌的 NSTextField。
+        #[cfg(target_os = "macos")]
+        if std::env::var("GPUI_AUTO_FOCUS").is_ok() && !self.auto_focused {
+            self.auto_focused = true;
+            crate::native::focus_first(window);
+        }
         let screen = self.state.read(cx).screen;
         match screen {
             Screen::Login => {
+                // 内嵌编辑器不该跨登录态存活:隐藏并停页面
+                #[cfg(target_os = "macos")]
+                crate::webview::close_pane();
                 if std::env::var("GPUI_RENDER_LOG").is_ok() {
                     eprintln!("[render] login busy={}", self.state.read(cx).busy);
                 }
@@ -2167,7 +2269,15 @@ impl Render for RootView {
                 self.render_login(busy, &login_err)
             }
             Screen::Main => {
+                // 原生输入框是窗口级子视图,离开登录屏必须整批隐藏
+                #[cfg(target_os = "macos")]
+                crate::native::hide_all();
                 let view = self.state.read(cx).view;
+                // 内嵌 webview 只挂在便签/文件库的正文区;切去画图等视图时隐藏
+                #[cfg(target_os = "macos")]
+                if view != View::Notes && view != View::Oss {
+                    crate::webview::hide();
+                }
                 if std::env::var("GPUI_RENDER_LOG").is_ok() {
                     eprintln!("[render] view={view:?}");
                 }
