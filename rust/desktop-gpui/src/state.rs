@@ -269,7 +269,7 @@ pub struct AppState {
     pub me: WeakEntity<AppState>,
     pub client: reqwest::blocking::Client,
     pub tx: Sender<Msg>,
-    pub rx: Receiver<Msg>,
+    pub rx: Option<Receiver<Msg>>,
     pub screen: Screen,
     pub view: View,
     // 登录(用户名/密码由登录页的输入框实体持有)
@@ -306,7 +306,7 @@ impl AppState {
             me: WeakEntity::new_invalid(),
             client,
             tx,
-            rx,
+            rx: Some(rx),
             screen: Screen::Login,
             view: View::Notes,
             api_base: load_api_base(),
@@ -337,13 +337,6 @@ impl AppState {
         std::thread::spawn(move || {
             let _ = tx.send(f(&client));
         });
-    }
-
-    /// 消费消息队列(主线程,render 前)。
-    pub fn drain(&mut self) {
-        while let Ok(m) = self.rx.try_recv() {
-            self.apply(m);
-        }
     }
 
     pub fn apply(&mut self, m: Msg) {
@@ -898,6 +891,17 @@ impl AppState {
 
     pub fn close_editor(&mut self) {
         self.editor.open_id.clear();
+    }
+
+    /// 是否有未完成的防抖/自动保存工作(pump 据此决定是否继续.tick)。
+    pub fn pending_work(&self) -> bool {
+        if self.screen != Screen::Main {
+            return false;
+        }
+        self.search_dirty_at.is_some()
+            || self.current.as_ref().map(|e| e.dirty).unwrap_or(false)
+            || self.oss.current.as_ref().map(|f| f.dirty).unwrap_or(false)
+            || self.draw.ed.as_ref().map(|e| e.dirty).unwrap_or(false)
     }
 
     /// 周期任务(pump 循环):防抖搜索、自动保存、词典查询。

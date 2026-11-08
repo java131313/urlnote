@@ -37,6 +37,10 @@ pub struct RootView {
     oss_content_input: Entity<TextField>,
     dialog_input: Entity<TextField>,
     name_input: Entity<TextField>,
+    /// 后台消息接收端(从 AppState 取来;pump 先收消息,有消息才 update state)
+    rx: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<Msg>>>,
+    /// 用户活动标志:输入框 observer / 画布操作置位,pump 据此跑 tick
+    need_tick: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RootView {
@@ -73,6 +77,19 @@ impl RootView {
         let api_base = state.read_with(cx, |st, _| st.api_base.clone());
         server_input.update(cx, |f, cx| f.set_text(api_base, cx));
 
+        let rx = state.update(cx, |st, _cx| st.rx.take()).expect("state rx");
+        let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+        let need_tick = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let nt_title = need_tick.clone();
+        let nt_tags = need_tick.clone();
+        let nt_content = need_tick.clone();
+        let nt_oss = need_tick.clone();
+        let nt_name = need_tick.clone();
+        let nt_search = need_tick.clone();
+        fn flag(nt: &std::sync::Arc<std::sync::atomic::AtomicBool>) {
+            nt.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+
         // ---- 观察者:输入框 → 状态 ----
         let st_e = state.clone();
         cx.observe(&title_input, move |root, field, cx| {
@@ -82,6 +99,7 @@ impl RootView {
                     if t != ed.note.title {
                         ed.note.title = t;
                         ed.mark_edit();
+                        flag(&nt_title);
                         cx.notify();
                     }
                 }
@@ -102,6 +120,7 @@ impl RootView {
                     if tags != ed.note.tags {
                         ed.note.tags = tags;
                         ed.mark_edit();
+                        flag(&nt_tags);
                         cx.notify();
                     }
                 }
@@ -117,6 +136,7 @@ impl RootView {
                     if t != ed.note.content {
                         ed.note.content = t;
                         ed.mark_edit();
+                        flag(&nt_content);
                         cx.notify();
                     }
                 }
@@ -132,6 +152,7 @@ impl RootView {
                     if t != f.content {
                         f.content = t;
                         f.mark_edit();
+                        flag(&nt_oss);
                         cx.notify();
                     }
                 }
@@ -147,6 +168,7 @@ impl RootView {
                     if t != ed.name {
                         ed.name = t;
                         ed.mark_edit();
+                        flag(&nt_name);
                         cx.notify();
                     }
                 }
@@ -156,6 +178,7 @@ impl RootView {
 
         let st_e6 = state.clone();
         cx.observe(&search_input, move |root, _field, cx| {
+            flag(&nt_search);
             root.state.update(cx, |st, _cx| {
                 st.search_dirty_at = Some(std::time::Instant::now());
             });
@@ -284,106 +307,134 @@ impl RootView {
             });
         }
 
-        // ---- 前台 pump 协程:消费消息 + 防抖 tick + pending 同步 ----
+        // ---- 前台 pump 协程:消息驱动 + 按需 tick ----
+        // 发现:gpui 0.2 里对实体 update 本身就会使渲染过它的视图重绘,
+        // 因此空闲时绝不动 AppState —— 否则周期性 update 造成 ~2Hz 持续重绘,
+        // canvas 自绘文字每次重绘都重新光栅化 → "一闪一闪"。
         {
-            let weak = cx.entity().downgrade();
+            let pump_rx = rx.clone();
+            let pump_need = need_tick.clone();
+            let search_e = search_input.clone();
+            let content_e = content_input.clone();
+            let title_e = title_input.clone();
+            let tags_e = tags_input.clone();
+            let oss_content_e = oss_content_input.clone();
             cx.spawn(async move |this, mut cx| {
+                use std::sync::atomic::Ordering::SeqCst;
+                // 上一轮 update 时是否仍有未完成的防抖/保存工作
+                let mut was_active = false;
                 loop {
                     enum Act {
                         Quit,
                         Sleep(u64),
                     }
-                    let act = cx.update(|cx| {
-                        let Some(root_ent) = this.upgrade() else {
-                            return Act::Quit;
-                        };
-                        let mut did = false;
-                        root_ent.update(cx, |root, cx| {
-                            let search_text = root.search_input.read_with(cx, |f, _| f.text());
-                            let (content_text, cursor) =
-                                root.content_input.read_with(cx, |f, _| (f.text(), f.cursor()));
-                            let (note_sync, note_content, oss_sync) = root.state.update(
-                                cx,
-                                |st, cx| {
-                                    while let Ok(m) = st.rx.try_recv() {
-                                        st.apply(m);
-                                        did = true;
-                                    }
-                                    if st.tick(search_text, content_text, cursor) {
-                                        did = true;
-                                    }
-                                    if did {
-                                        cx.notify();
-                                    }
-                                    (
-                                        st.pending_note_sync.take(),
-                                        st.pending_note_content.take(),
-                                        st.pending_oss_sync.take(),
-                                    )
-                                },
-                            );
-                            if let Some((id, title, tags, content, fs)) = note_sync {
-                                let cur_id = root.state.read_with(cx, |st, _| {
-                                    st.current.as_ref().map(|e| e.note.id.clone())
-                                });
-                                if cur_id.as_deref() == Some(id.as_str()) {
-                                    root.title_input.update(cx, |f, cx| f.set_text(title, cx));
-                                    root.tags_input.update(cx, |f, cx| f.set_text(tags, cx));
-                                    root.content_input.update(cx, |f, cx| {
-                                        f.set_text(content, cx);
-                                        f.set_font_size(px(fs.max(10) as f32), cx);
-                                    });
-                                    did = true;
-                                }
-                            }
-                            if let Some(content) = note_content {
-                                let (open_id, cur_note, cur_oss) = root.state.read_with(
+                    // 1) 先收消息(不碰 state)
+                    let mut msgs: Vec<Msg> = Vec::new();
+                    {
+                        let rx = pump_rx.lock().unwrap();
+                        while let Ok(m) = rx.try_recv() {
+                            msgs.push(m);
+                        }
+                    }
+                    // 2) 是否有活动:observer 标志 / 上一轮遗留工作 / 有消息
+                    let active = pump_need.swap(false, SeqCst) || was_active;
+                    if msgs.is_empty() && !active {
+                        let _ = gpui::Timer::after(Duration::from_millis(120)).await;
+                        continue;
+                    }
+                    let had_msgs = !msgs.is_empty();
+                    let act = cx
+                        .update(|cx| {
+                            let Some(root_ent) = this.upgrade() else {
+                                return Act::Quit;
+                            };
+                            let mut still_active = false;
+                            root_ent.update(cx, |root, cx| {
+                                let search_text = search_e.read_with(cx, |f, _| f.text());
+                                let (content_text, cursor) =
+                                    content_e.read_with(cx, |f, _| (f.text(), f.cursor()));
+                                let (note_sync, note_content, oss_sync) = root.state.update(
                                     cx,
-                                    |st, _| {
+                                    |st, cx| {
+                                        for m in msgs {
+                                            st.apply(m);
+                                        }
+                                        if st.tick(search_text, content_text, cursor) {
+                                            pump_need.store(true, SeqCst);
+                                        }
                                         (
-                                            st.editor.open_id.clone(),
-                                            st.current.as_ref().map(|e| e.note.id.clone()),
-                                            st.oss.current.as_ref().map(|f| f.key.clone()),
+                                            st.pending_note_sync.take(),
+                                            st.pending_note_content.take(),
+                                            st.pending_oss_sync.take(),
                                         )
                                     },
                                 );
-                                if cur_note.as_deref() == Some(open_id.as_str()) {
-                                    root.content_input.update(cx, |f, cx| {
-                                        f.set_text(content.clone(), cx)
+                                if let Some((id, title, tags, content, fs)) = note_sync {
+                                    let cur_id = root.state.read_with(cx, |st, _| {
+                                        st.current.as_ref().map(|e| e.note.id.clone())
                                     });
-                                    did = true;
-                                } else if cur_oss.as_deref() == Some(open_id.as_str()) {
-                                    root.oss_content_input.update(cx, |f, cx| {
-                                        f.set_text(content, cx)
-                                    });
-                                    did = true;
+                                    if cur_id.as_deref() == Some(id.as_str()) {
+                                        root.title_input.update(cx, |f, cx| {
+                                            f.set_text(title, cx)
+                                        });
+                                        root.tags_input.update(cx, |f, cx| f.set_text(tags, cx));
+                                        root.content_input.update(cx, |f, cx| {
+                                            f.set_text(content, cx);
+                                            f.set_font_size(px(fs.max(10) as f32), cx);
+                                        });
+                                    }
                                 }
-                            }
-                            if let Some((key, content, fs)) = oss_sync {
-                                let cur_key = root.state.read_with(cx, |st, _| {
-                                    st.oss.current.as_ref().map(|f| f.key.clone())
-                                });
-                                if cur_key.as_deref() == Some(key.as_str()) {
-                                    root.oss_content_input.update(cx, |f, cx| {
-                                        f.set_text(content, cx);
-                                        f.set_font_size(px(fs.max(10) as f32), cx);
-                                    });
-                                    did = true;
+                                if let Some(content) = note_content {
+                                    let (open_id, cur_note, cur_oss) = root.state.read_with(
+                                        cx,
+                                        |st, _| {
+                                            (
+                                                st.editor.open_id.clone(),
+                                                st.current.as_ref().map(|e| e.note.id.clone()),
+                                                st.oss.current.as_ref().map(|f| f.key.clone()),
+                                            )
+                                        },
+                                    );
+                                    if cur_note.as_deref() == Some(open_id.as_str()) {
+                                        root.content_input.update(cx, |f, cx| {
+                                            f.set_text(content.clone(), cx)
+                                        });
+                                    } else if cur_oss.as_deref() == Some(open_id.as_str()) {
+                                        root.oss_content_input.update(cx, |f, cx| {
+                                            f.set_text(content, cx)
+                                        });
+                                    }
                                 }
-                            }
-                        });
-                        if did {
-                            Act::Sleep(15)
-                        } else {
-                            Act::Sleep(120)
-                        }
-                    })
-                    .unwrap_or(Act::Quit);
+                                if let Some((key, content, fs)) = oss_sync {
+                                    let cur_key = root.state.read_with(cx, |st, _| {
+                                        st.oss.current.as_ref().map(|f| f.key.clone())
+                                    });
+                                    if cur_key.as_deref() == Some(key.as_str()) {
+                                        root.oss_content_input.update(cx, |f, cx| {
+                                            f.set_text(content, cx);
+                                            f.set_font_size(px(fs.max(10) as f32), cx);
+                                        });
+                                    }
+                                }
+                                still_active = root
+                                    .state
+                                    .read_with(cx, |st, _| st.pending_work());
+                            });
+                            // 消息驱动(UI 无输入事件),需在同一 update 内排入刷新效果,
+                            // finish_update 时才会真正执行(AsyncApp::refresh 在 update 外
+                            // 只排队不执行,见 gpui 0.2 Effect::RefreshWindows)。
+                            cx.refresh_windows();
+                            was_active = still_active;
+                            Act::Sleep(if still_active { 150 } else { 120 })
+                        })
+                        .unwrap_or(Act::Quit);
                     match act {
                         Act::Quit => break,
                         Act::Sleep(ms) => {
-                            if ms < 120 {
-                                let _ = cx.refresh();
+                            // 本轮有实际更新(state/输入框):跨线程消息不会触发窗口失效,
+                            // 依赖 refresh 强制重绘;空闲轮(ms==120 且无更新)不刷。
+                            if std::env::var("GPUI_RENDER_LOG").is_ok() && had_msgs {
+                                eprintln!("[pump] applied msgs, refresh queued");
                             }
                             let _ = gpui::Timer::after(Duration::from_millis(ms)).await;
                         }
@@ -391,7 +442,6 @@ impl RootView {
                 }
             })
             .detach();
-            let _ = weak;
         }
 
         let _ = st_e;
@@ -414,6 +464,8 @@ impl RootView {
             oss_content_input,
             dialog_input,
             name_input,
+            rx,
+            need_tick,
         }
     }
 
@@ -2081,6 +2133,9 @@ impl Render for RootView {
         let screen = self.state.read(cx).screen;
         match screen {
             Screen::Login => {
+                if std::env::var("GPUI_RENDER_LOG").is_ok() {
+                    eprintln!("[render] login busy={}", self.state.read(cx).busy);
+                }
                 let (busy, login_err) =
                     self.state.read_with(cx, |st, _| (st.busy, st.login_err.clone()));
                 self.render_login(busy, &login_err)
