@@ -444,3 +444,15 @@ fn parse_list_xml(body: &str) -> (Vec<String>, Vec<ListedFile>, Option<String>, 
     // CommonPrefixes 返回完整 prefix(如 a/b/)。
     (dirs, files, next, truncated)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn oss_conf_and_list() {
+        let c = super::load_creds().expect("load_creds");
+        assert!(c.endpoint.contains("sealos"));
+        let client = reqwest::blocking::Client::new();
+        let r = super::list_dir(&client, &c, "").expect("list_dir");
+        println!("dirs={} files={}", r.dirs.len(), r.files.len());
+    }
+}

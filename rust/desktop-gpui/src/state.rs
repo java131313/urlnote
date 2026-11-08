@@ -179,7 +179,7 @@ pub enum Screen {
     Main,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum View {
     Notes,
     Oss,
@@ -352,6 +352,11 @@ impl AppState {
                 self.busy = false;
                 if res.is_ok() {
                     self.enter_main();
+                } else if std::env::var("GPUI_AUTO_OSS").is_ok() {
+                    // 本地自检:自动登录本地 server 并进入文件库
+                    eprintln!("[auto] whoami failed, auto-login local server");
+                    self.api_base = "http://localhost:8080".into();
+                    self.do_login("admin".into(), "root@123".into());
                 }
             }
             Msg::Login(res) => {
@@ -360,6 +365,10 @@ impl AppState {
                     Ok(()) => {
                         save_api_base(&self.api_base);
                         self.enter_main();
+                        if std::env::var("GPUI_AUTO_OSS").is_ok() {
+                            eprintln!("[auto] login ok, enter oss");
+                            self.enter_oss();
+                        }
                     }
                     Err(e) => self.login_err = e,
                 }
@@ -509,20 +518,28 @@ impl AppState {
             }
             Msg::OssCreds(res) => match res {
                 Ok(c) => {
+                    eprintln!("[oss] creds ok: endpoint={} bucket={}", c.endpoint, c.bucket);
                     self.oss.creds = Some(c);
                     self.oss_list(String::new());
                 }
-                Err(e) => self.oss.creds_err = e,
+                Err(e) => {
+                    eprintln!("[oss] creds err: {e}");
+                    self.oss.creds_err = e;
+                }
             },
             Msg::OssList(res) => {
                 self.oss.loading = false;
                 match res {
                     Ok((prefix, r)) => {
+                        eprintln!("[oss] list ok: prefix={prefix} dirs={} files={}", r.dirs.len(), r.files.len());
                         self.oss.prefix = prefix;
                         self.oss.dirs = r.dirs;
                         self.oss.files = r.files;
                     }
-                    Err(e) => self.oss.status = e,
+                    Err(e) => {
+                        eprintln!("[oss] list err: {e}");
+                        self.oss.status = e;
+                    }
                 }
             }
             Msg::OssGot(res) => {
@@ -883,12 +900,13 @@ impl AppState {
         self.editor.open_id.clear();
     }
 
-    /// 周期任务(250ms 一次):防抖搜索、自动保存、词典查询。
-    /// content_text/cursor 由调用方从输入框实体读出。
-    pub fn tick(&mut self, search_text: String, content_text: String, cursor: usize) {
+    /// 周期任务(pump 循环):防抖搜索、自动保存、词典查询。
+    /// 返回本轮是否有可见状态变化(决定是否 notify 重绘)。
+    pub fn tick(&mut self, search_text: String, content_text: String, cursor: usize) -> bool {
         if self.screen != Screen::Main {
-            return;
+            return false;
         }
+        let mut changed = false;
         match self.view {
             View::Notes => {
                 // 便签自动保存
@@ -899,12 +917,14 @@ impl AppState {
                     .unwrap_or(false);
                 if save_due {
                     self.send_save();
+                    changed = true;
                 }
                 // 搜索防抖
                 if let Some(t) = self.search_dirty_at {
                     if t.elapsed() > SEARCH_DELAY {
                         self.search_dirty_at = None;
                         self.do_search(search_text);
+                        changed = true;
                     }
                 }
                 // 词典:光标前单词防抖查询
@@ -920,12 +940,14 @@ impl AppState {
                 if !has_current || word.is_empty() {
                     if self.dict.visible() {
                         self.dict.close();
+                        changed = true;
                     }
                 } else if word != self.dict.shown_for
                     && !self.dict.loading
                     && self.dict.last_req.elapsed() >= DICT_DELAY
                 {
                     self.do_dict(word);
+                    changed = true;
                 }
             }
             View::Oss => {
@@ -937,6 +959,7 @@ impl AppState {
                     .unwrap_or(false);
                 if due {
                     self.oss_save_now();
+                    changed = true;
                 }
             }
             View::Draw => {
@@ -948,9 +971,11 @@ impl AppState {
                     .unwrap_or(false);
                 if due {
                     self.draw_save_now();
+                    changed = true;
                 }
             }
         }
+        changed
     }
 
     // ---- 画图 ----

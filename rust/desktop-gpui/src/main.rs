@@ -309,8 +309,12 @@ impl RootView {
                                         st.apply(m);
                                         did = true;
                                     }
-                                    st.tick(search_text, content_text, cursor);
-                                    cx.notify();
+                                    if st.tick(search_text, content_text, cursor) {
+                                        did = true;
+                                    }
+                                    if did {
+                                        cx.notify();
+                                    }
                                     (
                                         st.pending_note_sync.take(),
                                         st.pending_note_content.take(),
@@ -378,6 +382,9 @@ impl RootView {
                     match act {
                         Act::Quit => break,
                         Act::Sleep(ms) => {
+                            if ms < 120 {
+                                let _ = cx.refresh();
+                            }
                             let _ = gpui::Timer::after(Duration::from_millis(ms)).await;
                         }
                     }
@@ -952,6 +959,15 @@ impl RootView {
     // ---------- 文件库 ----------
 
     fn render_oss(&self, st: &AppState) -> AnyElement {
+        if std::env::var("GPUI_RENDER_LOG").is_ok() {
+            eprintln!(
+                "[render-oss] creds={} err='{}' dirs={} files={}",
+                st.oss.creds.is_some(),
+                st.oss.creds_err,
+                st.oss.dirs.len(),
+                st.oss.files.len(),
+            );
+        }
         let state = self.state.clone();
 
         // 顶部:面包屑 + 操作
@@ -1393,8 +1409,16 @@ impl RootView {
             .flex_1()
             .min_h(px(0.0))
             .flex()
-            .child(sidebar)
-            .child(editor_col)
+            .flex_col()
+            .child(oss_bar_final)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .flex()
+                    .child(sidebar)
+                    .child(editor_col),
+            )
             .into_any_element()
     }
 
@@ -2063,6 +2087,9 @@ impl Render for RootView {
             }
             Screen::Main => {
                 let view = self.state.read(cx).view;
+                if std::env::var("GPUI_RENDER_LOG").is_ok() {
+                    eprintln!("[render] view={view:?}");
+                }
                 let toolbar = self.render_toolbar(self.state.read(cx));
                 let body = match view {
                     View::Notes => self.render_notes(self.state.read(cx)),
