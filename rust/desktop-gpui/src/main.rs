@@ -745,6 +745,14 @@ impl RootView {
             .border_color(rgb(0xe4e4e7))
             .bg(rgb(0xfbfcfe))
             .py_1()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(0x16a34a))
+                    .child(format!("[dbg] notes={}", st.notes.len())),
+            )
             .child(list);
 
         // 编辑器区
@@ -1318,7 +1326,9 @@ impl RootView {
                 }
                 rows
             },
-        );
+        )
+        .flex_1()
+        .min_h(px(0.0));
 
         let sidebar = div()
             .w(px(280.0))
@@ -1327,6 +1337,18 @@ impl RootView {
             .border_color(rgb(0xe4e4e7))
             .bg(rgb(0xfbfcfe))
             .py_1()
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(rgb(0x16a34a))
+                    .child(format!(
+                        "[dbg] dirs={} files={}",
+                        st.oss.dirs.len(),
+                        st.oss.files.len()
+                    )),
+            )
             .child(list);
 
         // 右:编辑器
@@ -1603,7 +1625,9 @@ impl RootView {
                     }
                     out
                 },
-            );
+            )
+            .flex_1()
+            .min_h(px(0.0));
             return div()
                 .flex_1()
                 .flex()
@@ -1844,33 +1868,34 @@ impl RootView {
                     });
                 }
             })
-            .on_mouse_move(move |event, _window, cx| {
-                let drawing =
-                    state_cv2.read_with(cx, |st, _| st.draw.ed.as_ref().map(|e| e.drawing).unwrap_or(false));
-                if drawing {
-                    if let Some(q) = to_logical2(event.position) {
-                        state_cv2.update(cx, |st, cx| {
-                            if let Some(ed) = &mut st.draw.ed {
-                                if let Some(ip) = &mut ed.in_progress {
-                                    match ip {
-                                        DrawEl::Pen { points, .. } | DrawEl::Eraser { points, .. } => {
-                                            points.push(q);
+            .when(
+                st.draw.ed.as_ref().map(|e| e.drawing).unwrap_or(false),
+                |d| {
+                    d.on_mouse_move(move |event, _window, cx| {
+                        if let Some(q) = to_logical2(event.position) {
+                            state_cv2.update(cx, |st, cx| {
+                                if let Some(ed) = &mut st.draw.ed {
+                                    if let Some(ip) = &mut ed.in_progress {
+                                        match ip {
+                                            DrawEl::Pen { points, .. } | DrawEl::Eraser { points, .. } => {
+                                                points.push(q);
+                                            }
+                                            DrawEl::Line { x1, y1, .. }
+                                            | DrawEl::Rect { x1, y1, .. }
+                                            | DrawEl::Ellipse { x1, y1, .. } => {
+                                                *x1 = q[0];
+                                                *y1 = q[1];
+                                            }
+                                            DrawEl::Text { .. } => {}
                                         }
-                                        DrawEl::Line { x1, y1, .. }
-                                        | DrawEl::Rect { x1, y1, .. }
-                                        | DrawEl::Ellipse { x1, y1, .. } => {
-                                            *x1 = q[0];
-                                            *y1 = q[1];
-                                        }
-                                        DrawEl::Text { .. } => {}
                                     }
                                 }
-                            }
-                            cx.notify();
-                        });
-                    }
-                }
-            })
+                                cx.notify();
+                            });
+                        }
+                    })
+                },
+            )
             .on_mouse_up(MouseButton::Left, move |_event, _window, cx| {
                 let was_drawing =
                     state_cv3.read_with(cx, |st, _| st.draw.ed.as_ref().map(|e| e.drawing).unwrap_or(false));

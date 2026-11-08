@@ -873,12 +873,10 @@ impl Render for TextField {
                     });
                 }
             })
-            .on_mouse_move({
-                let ent = entity.clone();
-                let inner2 = inner.clone();
-                move |event, _window, cx| {
-                    let dragging = inner2.lock().unwrap().drag_select;
-                    if dragging {
+            .when(self.inner.lock().unwrap().drag_select, |d| {
+                d.on_mouse_move({
+                    let ent = entity.clone();
+                    move |event, _window, cx| {
                         ent.update(cx, |field: &mut TextField, cx| {
                             let hit = field.hit_test(event.position);
                             let mut g = field.inner.lock().unwrap();
@@ -886,7 +884,7 @@ impl Render for TextField {
                             cx.notify();
                         });
                     }
-                }
+                })
             })
             .on_mouse_up(MouseButton::Left, {
                 let inner2 = inner.clone();
