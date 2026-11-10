@@ -839,7 +839,7 @@ pub async fn get_object_bytes(key: &str) -> Result<Vec<u8>, String> {
 fn file_kind(name: &str) -> &'static str {
     let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" => "image",
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" => "image",
         "pdf" => "pdf",
         "mp3" | "mp4" => "media",
         _ => "text",
@@ -885,6 +885,7 @@ fn media_stream_url(key: &str) -> String {
 fn image_mime(name: &str) -> &'static str {
     match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
         "png" => "image/png",
+        "svg" => "image/svg+xml",
         "gif" => "image/gif",
         "webp" => "image/webp",
         "avif" => "image/avif",
