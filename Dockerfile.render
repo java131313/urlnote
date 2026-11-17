@@ -32,6 +32,14 @@ RUN set -eux; \
     esac; \
     curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-${TRUNK}.tar.gz" | tar -xz -C /usr/local/bin
 RUN rustup target add wasm32-unknown-unknown
+# /oss 文件库编译期凭据(Render 把服务环境变量作为 build-arg 注入;
+# 与 pages.yml 同一套,本就编译进公开 WASM)
+ARG OSS_ENDPOINT
+ARG OSS_BUCKET
+ARG OSS_REGION
+ARG OSS_AK
+ARG OSS_SK
+ENV OSS_ENDPOINT=$OSS_ENDPOINT OSS_BUCKET=$OSS_BUCKET OSS_REGION=$OSS_REGION OSS_AK=$OSS_AK OSS_SK=$OSS_SK
 # Vditor/mammoth/turndown/pdfjs 运行时资源 staging(与 pages.yml 一致)
 RUN rm -rf static/vditor static/mammoth static/turndown static/pdfjs \
     && mkdir -p static/vditor static/mammoth static/turndown static/pdfjs \
