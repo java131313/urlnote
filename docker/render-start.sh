@@ -3,7 +3,7 @@
 # 数据在 Neon PG,FERRETDB_POSTGRESQL_URL 指向 Neon 的 direct(非池化)连接串。
 set -u
 
-: "${FERRETDB_POSTGRESQL_URL:?请设置 FERRETDB_POSTGRESQL_URL(Neon direct connection string)}"
+: "${FERRETDB_POSTGRESQL_URL:?请设置 FERRETDB_POSTGRESQL_URL(Supabase Session Pooler 连接串,密码需百分号编码)}"
 
 /usr/local/bin/ferretdb \
   --listen-addr=127.0.0.1:27017 \
