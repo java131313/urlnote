@@ -49,7 +49,8 @@ curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H 'Content-Type: app
     "repo":"https://github.com/java131313/urlnote","branch":"go-back",
     "serviceDetails":{
       "region":"oregon","plan":"free","runtime":"docker",
-      "dockerfilePath":"Dockerfile.render","healthCheckPath":"/",
+      "healthCheckPath":"/",
+      "envSpecificDetails":{"dockerfilePath":"Dockerfile.render","dockerContext":"."},
       "envVars":[{"key":"FERRETDB_POSTGRESQL_URL","value":"<pooler 串>"},
                  {"key":"MONGO_DB","value":"urlnote"},
                  {"key":"ADMIN_PASSWORD","value":"<强密码>"},
