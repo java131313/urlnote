@@ -1,87 +1,118 @@
-# Render(新加坡)部署与 Mongo→PG 数据迁移
+# Render 免费档部署 + Mongo→PG(Supabase)数据迁移
 
-整套栈跑在 Render,区域 `singapore`:
+架构(单 Pod,全免费):
 
 ```
-浏览器 ──HTTPS──► urlnote (Web,单 Pod)
-                   ├─ 静态托管 Rust/Leptos 前端(STATIC_DIR,/api 之外 SPA 回退)
-                   ├─ urlnote-server(API + /i 图片 + 词典分词)
-                   └─ mongodb driver ──► ferretdb (私有服务, :27017)
-                                           └─ FerretDB 把文档写进 ──► urlnote-pg (托管 PG 16)
+浏览器 ──HTTPS──► urlnote (Render 免费 Web,Oregon;单容器)
+                   ├─ FerretDB 127.0.0.1:27017(Mongo 线协议 → PG)
+                   ├─ urlnote-server :8080(API + /i 图片 + 词典分词)
+                   └─ 静态托管 Rust/Leptos 前端(STATIC_DIR,SPA 回退)
+                            │
+                            ▼  postgres wire over IPv4(Session Pooler)
+                   Supabase 免费 PostgreSQL(500MB,数据真身)
 ```
 
-服务端代码零改动:仍用 mongodb driver + GridFS(notecontents / markcontents / images),
-FerretDB 负责把线协议翻译成 PG 表。兼容性已实测通过(GridFS 读写、token 搜索、TTL/唯一索引)。
+服务端代码零改动:仍用 mongodb driver + GridFS,FerretDB 负责翻译。
 
-## 一、部署(Render Dashboard)
+**已实测通过**:FerretDB 1.24 ↔ Supabase Session Pooler 全链路
+(建索引/GridFS 读写/token 搜索/登录会话/词典/分词)。
 
-1. **New → Blueprint** 选本仓库,Apply `render.yaml`。会创建:
-   - `urlnote-pg` — 托管 PostgreSQL 16(Starter,数据真身)
-   - `ferretdb` — 私有服务,镜像 `ghcr.io/ferretdb/ferretdb:1.24`
-   - `urlnote` — Web 服务,Dockerfile.render 单 Pod(前端 + 后端)
-2. 部署完成后记下 `https://urlnote-xxxx.onrender.com`(或绑自定义域名)。
-3. `ADMIN_PASSWORD` 在 Blueprint 里是 `generateValue` 自动生成的随机串,
-   到 Dashboard → urlnote → Environment 里改成你想要的(只影响**首次**建 admin)。
-4. (可选)把 GitHub Pages 那份前端的 API_BASE 指过来 → CORS_ORIGINS 里加
-   `https://java131313.github.io` 即可(render.yaml 已默认带上)。
+⚠️ 踩过的坑(都验证过):
+- **必须 Session Pooler 串**(`*.pooler.supabase.com:5432`,用户名带 `.项目ref` 后缀)。
+  Direct 串(`db.*.supabase.co:5432`)是 IPv6-only,Render 出站只有 IPv4,连不上。
+- 密码含 `@` 必须百分号编码:`Root@131313@super` → `Root%40131313%40super`。
+- **Neon 与 FerretDB 不兼容**(其代理对 Go/pgx 客户端握手无响应,超时;libpq 正常)。已排除。
+- Supabase 项目区域以控制台为准(本项目实际在东京 ap-northeast-1,aws-1 集群)。
 
-## 二、数据迁移(Sealos Mongo → FerretDB/PG)
+## 0. 准备(已完成)
 
-一次性,本地跑。前提:本机有 `mongodump`/`mongorestore`
-(`brew install mongodb-database-tools`)。
+- Supabase 项目:`pyrpqmfwzyvbcozqqozx`(东京),Session Pooler 串已配置
+- Render:免费 web 服务,仓库 `java131313/urlnote` 分支 `go-back`
+
+## 一、部署(Render API / Dashboard 二选一)
+
+### 方式 A:Dashboard → New → Web Service
+
+- 仓库/分支同上,Runtime: Docker,Dockerfile path: `Dockerfile.render`
+- Plan: Free,Region: Oregon(免费只有这个)
+- 环境变量(照 render.yaml):
+  `FERRETDB_POSTGRESQL_URL` = Session Pooler 串(密码编码后)
+  `MONGO_DB=urlnote` `ADMIN_PASSWORD=<强密码>` `CORS_ORIGINS=https://java131313.github.io`
+  `OFFICE_SERVER_URL=https://qkrvktsrtwmd.sealosbja.site`
+
+### 方式 B:REST API
 
 ```bash
-# 1. 从 Sealos Mongo 拉全量 dump
-#    内网域名连不上就先用 kubectl/Sealos 控制台做端口转发到本地 27099
-mongodump \
-  --uri="mongodb://root:64LFF652zQ2I52DZ@127.0.0.1:27099/?authSource=admin" \
+curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" -H 'Content-Type: application/json' \
+  -d '{
+    "type":"web","name":"urlnote","ownerId":"<workspaceId>",
+    "repo":"https://github.com/java131313/urlnote","branch":"go-back",
+    "serviceDetails":{
+      "region":"oregon","plan":"free","runtime":"docker",
+      "dockerfilePath":"Dockerfile.render","healthCheckPath":"/",
+      "envVars":[{"key":"FERRETDB_POSTGRESQL_URL","value":"<pooler 串>"},
+                 {"key":"MONGO_DB","value":"urlnote"},
+                 {"key":"ADMIN_PASSWORD","value":"<强密码>"},
+                 {"key":"CORS_ORIGINS","value":"https://java131313.github.io"},
+                 {"key":"OFFICE_SERVER_URL","value":"https://qkrvktsrtwmd.sealosbja.site"}]
+    }}' https://api.render.com/v1/services
+```
+
+首次构建约 20~30 分钟(rust + wasm 全量编译)。
+
+## 二、数据迁移(Sealos Mongo → Supabase PG)
+
+一次性,本地跑。需要 `brew install mongodb-database-tools`。
+
+```bash
+# 1. 从 Sealos 拉全量 dump(内网域名不通就先 kubectl 端口转发到 27099)
+mongodump --uri="mongodb://root:64LFF652zQ2I52DZ@127.0.0.1:27099/?authSource=admin" \
   --out=./urlnote-dump
-#  dump 目录结构:urlnote-dump/urlnote/<collection>.bson + .metadata.json
+
+# 2. 本地起一次性 FerretDB 指向 Supabase,灌库
+docker run -d --name fdb-mig -p 127.0.0.1:27099:27017 \
+  -e FERRETDB_POSTGRESQL_URL='<pooler 串>' \
+  -e FERRETDB_LISTEN_ADDR=0.0.0.0:27017 \
+  ghcr.io/ferretdb/ferretdb:1.24
+
+# 3. 灌库(--drop:同名集合先清再导,幂等可重跑)
+mongorestore --uri="mongodb://127.0.0.1:27099/urlnote" --drop ./urlnote-dump/urlnote
+
+# 4. 核对后清场
+docker rm -f fdb-mig
 ```
 
-**导入通道三选一**(FerretDB 在 Render 私网,本机不可直达):
+注意:若本机 DNS 解析不了 `*.pooler.supabase.com`(国内 ISP DNS 污染),
+给 fdb-mig 加 `--add-host "<pooler 主机>:<IP>"`(IP 用 `curl 'https://dns.google/resolve?name=<host>&type=A'` 查)。
 
-### 方案 A:临时开公网隧道(最快,迁完即关)
+## 三、迁移后验证
 
-1. Dashboard → `ferretdb` → 临时改成 **Web** 类型服务(或新建一个指向同镜像的
-   Web 服务 `ferretdb-migrate`,环境变量同 ferretdb),Render 会给出
-   `https://ferretdb-migrate-xxxx.onrender.com`。
-2. Render 只代理 HTTP,所以本地用 `mongorestore --ssl` 不行——
-   改用 WebSocket/HTTP 隧道工具(如 ` bore ` 不适用;推荐 **本地 SSH 隧道到任一
-   Render Web Pod 再跳私网**,见方案 B)。⚠️ 实践中方案 B 更稳,优先 B。
+- [ ] `https://urlnote-xxxx.onrender.com/` 打开能登录(admin / ADMIN_PASSWORD)
+- [ ] 旧笔记列表完整、正文(走 GridFS)能打开、全文搜索有结果
+- [ ] Supabase Dashboard → Database → 有 `urlnote` schema 和一堆 `*_xxxxxxxx` 表
+- [ ] 词典 seed(幂等):Dashboard → urlnote → Shell → `/app/urlnote-server seed`
+- [ ] 冷启动体验:闲置 15 分钟后首访 ~10s(Render 容器唤醒),Neon 侧无此问题
 
-### 方案 B:SSH 进 urlnote Pod 转发(推荐)
+## 四、免费档红线与对策
 
-Render 支持 `ssh` 直连 Web 服务实例(实例详情页有 SSH 地址):
+| 限制 | 对策 |
+|---|---|
+| Render 免费 Web 15 分钟无访问休眠 | 首访 ~10s 冷启动;或 UptimeRobot 定时 ping(灰色,慎用) |
+| Supabase 500MB | 文本笔记随便装;**图片别走 GridFS**,继续用 Sealos S3(/oss 页本来就连 S3) |
+| Render→东京 DB 延迟 ~120ms | 已实测可接受;页面加载多 1-2s |
+| Render 免费 750 小时/月 | 单服务全月 744h,刚好够;别开第二个免费服务 |
+| 无备份 | pg_dump 定期导出存 GitHub 私有仓库,见下 |
+
+pg_dump 备份:
 
 ```bash
-# 本地 27017 转发到 Render 私网里的 ferretdb:27017
-ssh -L 27017:ferretdb:27017 <urlnote-pod-ssh地址> -N
-# 另一个终端:
-mongorestore --uri="mongodb://127.0.0.1:27017/urlnote" --drop ./urlnote-dump/urlnote
+docker run --rm postgres:16 pg_dump "postgresql://postgres.<ref>:<pwd>@<pooler>:5432/postgres" \
+  -n urlnote -Fc -f /dev/stdout > urlnote-$(date +%F).dump 2>/dev/null
+# (走 pooler 时需要先加 --add-host;或从有 IPv6 的机器走 direct 串)
 ```
 
-`render ssh` CLI 也支持同样转发:`render ssh <service-id> -- -L 27017:ferretdb:27017 -N`。
+## 五、升级路径(以后想付费/换区域)
 
-### 方案 C:导入完成后清场
-
-- 方案 A 用的临时 Web 服务删掉。
-- 验证数据:`docker run --rm -it mongo:7 mongosh "mongodb://..."` 或直接开站看笔记。
-
-## 三、迁移后验证清单
-
-- [ ] `https://<域名>/` 打开,能登录(admin / 你设的密码)
-- [ ] 旧笔记列表完整、正文(走 GridFS)能打开、全文搜索有结果
-- [ ] 图片 `/i/...` 正常(图片在 KV,若仍走 Cloudflare Worker 则不受影响)
-- [ ] Dashboard → `urlnote-pg` → 看表:`notecontents.files/chunks`、`notes`、`dict_word`…
-- [ ] 词典 seed(迁移后建议补一次,幂等):
-      Dashboard → urlnote → Shell:
-      `/app/urlnote-server seed`
-
-## 四、费用与注意
-
-- 新加坡没有免费档:`urlnote-pg` + `ferretdb` + `urlnote` 三个 Starter ≈ $21/月。
-- FerretDB 1.24 是 1.x 末版(2.x 需要 PG 装 DocumentDB 扩展,Render 托管 PG 不支持)。
-  组件只在 Render 私网内监听,不暴露公网;锁定不升级即可长期稳定。
-- 单 Pod 意味着发新版时有几秒不可用;介意的话把 `urlnote` 升 Standard 开多实例
-  (无状态,可以水平扩;会话在 Mongo 侧即 PG 侧)。
+- 数据在 Supabase PG,想换部署平台/区域随时 `pg_dump`/`mongorestore` 搬走
+- 加卡后可把 Render 服务升 Starter(选新加坡),延迟降到 ~30ms
+- FerretDB 独立 pserv 方案(与 Render 付费 PG 搭配)见 git 历史(`render.yaml` @ `86c4ef1`)
