@@ -12,7 +12,7 @@
 databases:
   - name: urlnote-pg
     region: singapore
-    plan: starter
+    plan: basic_256mb
     postgresMajorVersion: "16"
 
 services:
@@ -38,12 +38,9 @@ services:
     dockerfilePath: ./Dockerfile.render
     healthCheckPath: /
     envVars:
-      # MONGODB_URI 在启动命令里由 ferretdb 的主机名拼出(render.yaml 不支持字符串插值)
-      - key: FERRETDB_HOST
-        fromService:
-          type: pserv
-          name: ferretdb
-          property: host
+      # 私网里直接用服务名解析 ferretdb
+      - key: MONGODB_URI
+        value: mongodb://ferretdb:27017
       - key: MONGO_DB
         value: urlnote
       - key: ADMIN_PASSWORD
@@ -52,5 +49,3 @@ services:
         value: https://java131313.github.io
       - key: OFFICE_SERVER_URL
         value: https://qkrvktsrtwmd.sealosbja.site
-    startCommand: |
-      sh -c 'export MONGODB_URI="mongodb://$FERRETDB_HOST:27017"; exec /app/urlnote-server'

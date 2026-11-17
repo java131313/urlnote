@@ -3,6 +3,14 @@
 # 前端同源调用 /api、/i,无需 CORS、无需 nginx。
 #
 # 数据层:FerretDB(MongoDB 线协议) backed by PostgreSQL —— 见 render.yaml。
+
+# ---- 前端运行时资源(npm 包;rust 基础镜像不带 node,用独立 node 阶段拉包) ----
+FROM node:20-bookworm AS fe-assets
+WORKDIR /app
+COPY rust/frontend/package.json rust/frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+
+# ---- 前端构建(Trunk → dist) ----
 FROM rust:1-bookworm AS fe-build
 WORKDIR /app/frontend
 # Trunk(按构建架构取二进制;Render 构建机为 x86_64)
@@ -15,9 +23,9 @@ RUN set -eux; \
     esac; \
     curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-${TRUNK}.tar.gz" | tar -xz -C /usr/local/bin
 RUN rustup target add wasm32-unknown-unknown
-# Vditor/mammoth/turndown/pdfjs 运行时资源经 npm 包 staging(与 pages.yml 一致)
+# Vditor/mammoth/turndown/pdfjs 运行时资源 staging(与 pages.yml 一致)
 COPY rust/frontend/package.json rust/frontend/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+COPY --from=fe-assets /app/node_modules ./node_modules
 COPY rust/frontend/ .
 RUN rm -rf static/vditor static/mammoth static/turndown static/pdfjs \
     && mkdir -p static/vditor static/mammoth static/turndown static/pdfjs \
