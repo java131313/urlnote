@@ -1,0 +1,58 @@
+# Render 单 Pod 全栈镜像:Rust/Leptos 前端(Trunk→dist)+ urlnote-server,
+# 运行时由 server 直接托管静态文件(STATIC_DIR + 内置 SPA 回退),
+# 前端同源调用 /api、/i,无需 CORS、无需 nginx。
+#
+# 数据层:FerretDB(MongoDB 线协议) backed by PostgreSQL —— 见 render.yaml。
+FROM rust:1-bookworm AS fe-build
+WORKDIR /app/frontend
+# Trunk(按构建架构取二进制;Render 构建机为 x86_64)
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) TRUNK=x86_64-unknown-linux-gnu ;; \
+      arm64) TRUNK=aarch64-unknown-linux-gnu ;; \
+      *) TRUNK=x86_64-unknown-linux-gnu ;; \
+    esac; \
+    curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-${TRUNK}.tar.gz" | tar -xz -C /usr/local/bin
+RUN rustup target add wasm32-unknown-unknown
+# Vditor/mammoth/turndown/pdfjs 运行时资源经 npm 包 staging(与 pages.yml 一致)
+COPY rust/frontend/package.json rust/frontend/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY rust/frontend/ .
+RUN rm -rf static/vditor static/mammoth static/turndown static/pdfjs \
+    && mkdir -p static/vditor static/mammoth static/turndown static/pdfjs \
+    && cp -R node_modules/vditor/dist static/vditor/dist \
+    && cp node_modules/mammoth/mammoth.browser.min.js static/mammoth/ \
+    && cp node_modules/turndown/dist/turndown.js static/turndown/ \
+    && cp node_modules/pdfjs-dist/legacy/build/pdf.min.js \
+          node_modules/pdfjs-dist/legacy/build/pdf.worker.min.js \
+          static/pdfjs/
+# API_BASE 不设置 = 同源;--public-url / = 根路径部署(onrender 域名或自定义域名)
+RUN trunk build --release --public-url / \
+    && rm -rf dist/vditor dist/mammoth dist/turndown dist/pdfjs \
+    && cp -R static/vditor static/mammoth static/turndown static/pdfjs dist/ \
+    && mkdir -p dist/dict && cp -R static/dict/. dist/dict/
+
+# ---- 后端构建(精简 workspace:shared + server) ----
+FROM rust:1-bookworm AS be-build
+WORKDIR /app/rust
+COPY rust/Cargo.toml rust/Cargo.lock ./
+RUN printf '[workspace]\nmembers = ["shared", "server"]\nresolver = "2"\n' > Cargo.toml
+COPY rust/shared ./shared
+COPY rust/server ./server
+RUN cargo build --release -p urlnote-server
+
+# ---- 运行时 ----
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=be-build /app/rust/target/release/urlnote-server /app/urlnote-server
+COPY --from=fe-build /app/frontend/dist /app/static
+COPY rust/frontend/static/dict/system_ipadic.dic.zst /app/dict/system_ipadic.dic.zst
+ENV IPADIC_PATH=/app/dict/system_ipadic.dic.zst \
+    STATIC_DIR=/app/static \
+    PORT=8080
+EXPOSE 8080
+CMD ["/app/urlnote-server"]

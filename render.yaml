@@ -1,0 +1,56 @@
+# Render Blueprint:urlnote 全家桶(新加坡)
+#
+#   导入:Render Dashboard → New → Blueprint → 选本仓库 → Apply
+#
+# 架构:
+#   urlnote-pg   Render 托管 PostgreSQL 16(数据真正落在这里)
+#   ferretdb     私有服务,MongoDB 线协议 → PG 的翻译层
+#                (服务端代码零改动,继续用 mongodb driver + GridFS)
+#   urlnote      单 Pod:Rust 前端静态文件 + urlnote-server(STATIC_DIR 托管,SPA 回退)
+#
+# 注意:免费档只在美西;新加坡(含所有付费档)按 Starter 计费。
+databases:
+  - name: urlnote-pg
+    region: singapore
+    plan: starter
+    postgresMajorVersion: "16"
+
+services:
+  - type: pserv
+    name: ferretdb
+    region: singapore
+    plan: starter
+    image:
+      url: ghcr.io/ferretdb/ferretdb:1.24
+    envVars:
+      - key: FERRETDB_POSTGRESQL_URL
+        fromDatabase:
+          name: urlnote-pg
+          property: connectionString
+      - key: FERRETDB_LISTEN_ADDR
+        value: 0.0.0.0:27017
+
+  - type: web
+    name: urlnote
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    healthCheckPath: /
+    envVars:
+      # MONGODB_URI 在启动命令里由 ferretdb 的主机名拼出(render.yaml 不支持字符串插值)
+      - key: FERRETDB_HOST
+        fromService:
+          type: pserv
+          name: ferretdb
+          property: host
+      - key: MONGO_DB
+        value: urlnote
+      - key: ADMIN_PASSWORD
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://java131313.github.io
+      - key: OFFICE_SERVER_URL
+        value: https://qkrvktsrtwmd.sealosbja.site
+    startCommand: |
+      sh -c 'export MONGODB_URI="mongodb://$FERRETDB_HOST:27017"; exec /app/urlnote-server'
