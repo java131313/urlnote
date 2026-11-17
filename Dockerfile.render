@@ -10,8 +10,17 @@ WORKDIR /app
 COPY rust/frontend/package.json rust/frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
-# ---- 前端构建(Trunk → dist) ----
-FROM rust:1-bookworm AS fe-build
+# ---- 前端构建(Trunk → dist;trixie 的 glibc 2.41 满足 trunk 0.22 二进制要求) ----
+FROM rust:1-trixie AS fe-build
+WORKDIR /app
+# workspace 布局:frontend 是 workspace 成员且 path 依赖 shared;
+# 精简 members(桌面/worker 不进镜像),保留 release profile(wasm 体积)
+COPY rust/Cargo.toml rust/Cargo.lock ./
+RUN printf '[workspace]\nmembers = ["shared", "frontend"]\nresolver = "2"\n\n[profile.release]\nopt-level = "s"\nlto = true\n' > Cargo.toml
+COPY rust/shared ./shared
+COPY rust/frontend/package.json rust/frontend/package-lock.json ./frontend/
+COPY --from=fe-assets /app/node_modules ./frontend/node_modules
+COPY rust/frontend/ ./frontend/
 WORKDIR /app/frontend
 # Trunk(按构建架构取二进制;Render 构建机为 x86_64)
 ARG TARGETARCH
@@ -24,9 +33,6 @@ RUN set -eux; \
     curl -sSfL "https://github.com/trunk-rs/trunk/releases/download/v0.22.0/trunk-${TRUNK}.tar.gz" | tar -xz -C /usr/local/bin
 RUN rustup target add wasm32-unknown-unknown
 # Vditor/mammoth/turndown/pdfjs 运行时资源 staging(与 pages.yml 一致)
-COPY rust/frontend/package.json rust/frontend/package-lock.json ./
-COPY --from=fe-assets /app/node_modules ./node_modules
-COPY rust/frontend/ .
 RUN rm -rf static/vditor static/mammoth static/turndown static/pdfjs \
     && mkdir -p static/vditor static/mammoth static/turndown static/pdfjs \
     && cp -R node_modules/vditor/dist static/vditor/dist \
@@ -50,17 +56,28 @@ COPY rust/shared ./shared
 COPY rust/server ./server
 RUN cargo build --release -p urlnote-server
 
-# ---- 运行时 ----
+# ---- 运行时(免费档单 Pod:FerretDB 同容器 + urlnote-server + 静态前端) ----
 FROM debian:bookworm-slim
+ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+# FerretDB 1.24.2 独立二进制(纯 Go 静态编译,跨发行版)
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) FDB_ARCH=amd64 ;; \
+      arm64) FDB_ARCH=arm64 ;; \
+      *) FDB_ARCH=amd64 ;; \
+    esac; \
+    curl -sSfL "https://github.com/FerretDB/FerretDB/releases/download/v1.24.2/ferretdb-linux-${FDB_ARCH}" -o /usr/local/bin/ferretdb \
+    && chmod +x /usr/local/bin/ferretdb
 WORKDIR /app
 COPY --from=be-build /app/rust/target/release/urlnote-server /app/urlnote-server
 COPY --from=fe-build /app/frontend/dist /app/static
 COPY rust/frontend/static/dict/system_ipadic.dic.zst /app/dict/system_ipadic.dic.zst
+COPY docker/render-start.sh /app/start.sh
 ENV IPADIC_PATH=/app/dict/system_ipadic.dic.zst \
     STATIC_DIR=/app/static \
     PORT=8080
 EXPOSE 8080
-CMD ["/app/urlnote-server"]
+CMD ["/app/start.sh"]

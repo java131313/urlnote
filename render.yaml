@@ -1,46 +1,30 @@
-# Render Blueprint:urlnote 全家桶(新加坡)
+# Render Blueprint:urlnote 免费档单 Pod 全栈
 #
 #   导入:Render Dashboard → New → Blueprint → 选本仓库 → Apply
+#   然后手动补一个环境变量(Blueprint 建不了外部资源):
+#     Dashboard → urlnote → Environment → FERRETDB_POSTGRESQL_URL
+#     = Neon 控制台 "Direct connection" 连接串(以 postgresql:// 开头)
 #
-# 架构:
-#   urlnote-pg   Render 托管 PostgreSQL 16(数据真正落在这里)
-#   ferretdb     私有服务,MongoDB 线协议 → PG 的翻译层
-#                (服务端代码零改动,继续用 mongodb driver + GridFS)
-#   urlnote      单 Pod:Rust 前端静态文件 + urlnote-server(STATIC_DIR 托管,SPA 回退)
+# 架构(免费):
+#   Neon 免费 PostgreSQL(0.5GB,数据真身,GitHub 登录即开)
+#     ▲
+#   urlnote Web(免费档,仅 Oregon;单容器内:FerretDB :27017 + urlnote-server :8080)
+#     FerretDB 把 MongoDB 线协议翻译成 PG —— 服务端代码零改动
 #
-# 注意:免费档只在美西;新加坡(含所有付费档)按 Starter 计费。
-databases:
-  - name: urlnote-pg
-    region: singapore
-    plan: basic_256mb
-    postgresMajorVersion: "16"
-
+# 免费档限制:15 分钟无访问休眠(首次打开 ~10s 冷启动);
+# 图片建议存 Sealos S3(0.5GB 存不下多少图);区域只有美西。
 services:
-  - type: pserv
-    name: ferretdb
-    region: singapore
-    plan: starter
-    image:
-      url: ghcr.io/ferretdb/ferretdb:1.24
-    envVars:
-      - key: FERRETDB_POSTGRESQL_URL
-        fromDatabase:
-          name: urlnote-pg
-          property: connectionString
-      - key: FERRETDB_LISTEN_ADDR
-        value: 0.0.0.0:27017
-
   - type: web
     name: urlnote
-    region: singapore
-    plan: starter
+    region: oregon
+    plan: free
     runtime: docker
     dockerfilePath: ./Dockerfile.render
     healthCheckPath: /
     envVars:
-      # 私网里直接用服务名解析 ferretdb
-      - key: MONGODB_URI
-        value: mongodb://ferretdb:27017
+      # Neon Dashboard → Connection Details → "Direct connection"(非 pooled!)
+      - key: FERRETDB_POSTGRESQL_URL
+        sync: false
       - key: MONGO_DB
         value: urlnote
       - key: ADMIN_PASSWORD
