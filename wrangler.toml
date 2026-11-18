@@ -37,3 +37,11 @@ crons = ["7,27,47 * * * *"]
 # 同源（CF 部署）。Sealos 免费域名随应用重建可能变化，变了要同步这里并重新部署。
 [vars]
 CORS_ORIGINS = "https://java131313.github.io, https://kozgijfxmimm.sealosbja.site"
+# /oss 文件库编译期凭据(wrangler 会把 [vars] 注入构建命令环境,
+# trunk 构建时 option_env! 编译进 WASM;与 pages.yml / Render 同一套值,
+# 本就编译进公开包)
+OSS_ENDPOINT = "objectstorageapi.bja.sealos.run"
+OSS_BUCKET = "mpzfivcp-watchwonderful"
+OSS_REGION = "us-east-1"
+OSS_AK = "mpzfivcp"
+OSS_SK = "96p89bwhdqpmhd6z"
