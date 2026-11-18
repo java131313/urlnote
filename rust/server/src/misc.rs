@@ -402,10 +402,11 @@ const IMAGE_EXT_MIME: [(&str, &str); 5] = [
 
 pub async fn image(
     State(st): State<AppState>,
-    headers: HeaderMap,
     Path(name): Path<String>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    require_user(&st, &headers).await?;
+    // 无需登录:与 Cloudflare Worker 的 /i/ 语义一致(图片名为随机 key,
+    // 公开靠不可猜测性);跨域部署时 <img> 不携带 Cookie,require_user 会
+    // 把所有笔记图片打成 401。
     if !valid_image_name(&name) {
         return Err(json_error(StatusCode::NOT_FOUND, "not found"));
     }
